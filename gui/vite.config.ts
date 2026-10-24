@@ -22,4 +22,21 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8550',
+        changeOrigin: true,
+      },
+      '/docs': {
+        target: 'http://localhost:8550',
+        changeOrigin: true,
+      },
+      '/library': {
+        target: 'http://localhost:8550',
+        changeOrigin: true,
+      },
+    },
+  },
 })

@@ -5,32 +5,34 @@ interface TooltipProps {
   content: ReactNode;
   /** The trigger element (e.g. an info icon) */
   children: ReactNode;
+  className?: string;
 }
 
 /**
- * A viewport-aware tooltip that appears above its trigger element.
- * Automatically clamps horizontal position so it never overflows
- * the left or right edge of the viewport.
+ * An Obsidian-style viewport-aware tooltip that appears smoothly
+ * above (or below when near top) its trigger element.
  */
-export default function Tooltip({ content, children }: TooltipProps) {
+export default function Tooltip({ content, children, className = '' }: TooltipProps) {
   const [visible, setVisible] = useState(false);
-  const [pos, setPos] = useState({ left: 0, bottom: 0 });
+  const [coords, setCoords] = useState<{ x: number; y: number; placeBottom: boolean }>({
+    x: 0,
+    y: 0,
+    placeBottom: false,
+  });
   const wrapRef = useRef<HTMLSpanElement>(null);
 
   const show = useCallback(() => {
     const el = wrapRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const tooltipW = 280;
-    const gap = 6;
-    const margin = 4;                       // min distance from viewport edge
+    const placeBottom = rect.top < 110;
+    const rawX = rect.left + rect.width / 2;
+    const maxW = 300;
+    const half = maxW / 2;
+    const x = Math.max(half + 12, Math.min(rawX, window.innerWidth - half - 12));
+    const y = placeBottom ? rect.bottom + 6 : rect.top - 6;
 
-    // Ideal: centred on the icon
-    let left = rect.left + rect.width / 2 - tooltipW / 2;
-    // Clamp so the tooltip stays within the viewport
-    left = Math.max(margin, Math.min(left, window.innerWidth - tooltipW - margin));
-
-    setPos({ left, bottom: window.innerHeight - rect.top + gap });
+    setCoords({ x, y, placeBottom });
     setVisible(true);
   }, []);
 
@@ -39,15 +41,21 @@ export default function Tooltip({ content, children }: TooltipProps) {
   return (
     <span
       ref={wrapRef}
-      className="config-tooltip-wrap"
+      className={`config-tooltip-wrap ${className}`}
       onMouseEnter={show}
       onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
     >
       {children}
       {visible && (
         <span
-          className="config-tooltip"
-          style={{ left: pos.left, bottom: pos.bottom }}
+          className={`config-tooltip ${coords.placeBottom ? 'place-bottom' : ''}`}
+          style={{
+            left: coords.x,
+            top: coords.placeBottom ? coords.y : undefined,
+            bottom: !coords.placeBottom ? window.innerHeight - coords.y : undefined,
+          }}
         >
           {content}
         </span>

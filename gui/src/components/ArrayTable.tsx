@@ -1,5 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
+import ExportCsvIcon from './ExportCsvIcon';
 import { useModelStore } from '../stores/modelStore';
+import { exportArrayTableToCsv } from '../utils/csv';
 
 function formatValue(val: number): string {
   if (Number.isInteger(val) && Math.abs(val) < 1e9) return val.toString();
@@ -16,6 +18,7 @@ interface ArrayEntry {
 export default function ArrayTable() {
   const [filter, setFilter] = useState('');
   const lastResult = useModelStore((s) => s.lastResult);
+  const modelName = useModelStore((s) => s.modelName);
 
   const { baseNames, indices, grid } = useMemo(() => {
     if (!lastResult) return { baseNames: [] as string[], indices: [] as number[], grid: new Map<string, Map<number, number>>() };
@@ -54,6 +57,11 @@ export default function ArrayTable() {
     return baseNames.filter((n) => n.toLowerCase().includes(lower));
   }, [baseNames, filter]);
 
+  const handleExportCsv = useCallback(() => {
+    if (baseNames.length === 0 || indices.length === 0) return;
+    exportArrayTableToCsv(baseNames, indices, grid, modelName);
+  }, [baseNames, indices, grid, modelName]);
+
   if (!lastResult || baseNames.length === 0) {
     return (
       <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
@@ -65,7 +73,7 @@ export default function ArrayTable() {
   }
 
   return (
-    <>
+    <div className="array-table-view">
       <div className="search-filter">
         <input
           type="text"
@@ -73,6 +81,13 @@ export default function ArrayTable() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
+        <button
+          className="export-csv-btn"
+          onClick={handleExportCsv}
+          title="Export array table to CSV"
+        >
+          <ExportCsvIcon size={15} />
+        </button>
       </div>
       <div className="variable-table-container">
         <table className="variable-table array-table">
@@ -100,10 +115,10 @@ export default function ArrayTable() {
             ))}
           </tbody>
         </table>
-        <div style={{ padding: '4px 8px', fontSize: 11, color: 'var(--text-muted)' }}>
-          {filteredBaseNames.length} array{filteredBaseNames.length !== 1 ? 's' : ''} × {indices.length} indices
-        </div>
       </div>
-    </>
+      <div className="table-footer-status">
+        {filteredBaseNames.length} array{filteredBaseNames.length !== 1 ? 's' : ''} × {indices.length} indices
+      </div>
+    </div>
   );
 }

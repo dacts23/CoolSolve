@@ -1,140 +1,77 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 :: ============================================================
 :: CoolSolve Windows Build + Installer Script
 ::
-:: Requirements:
-::   - Visual Studio 2022 with C++ Desktop Development workload
-::   - Git (on PATH): CMake clones CoolProp and the model library
-::   - Node.js (https://nodejs.org) for the React GUI frontend
-::   - Python 3 (e.g. Anaconda) — needed by CoolProp's CMake scripts
-::   - NSIS (https://nsis.sourceforge.net) for the installer
-::
-:: Update the paths in Section 1 if your installation differs.
-::
-:: Release build: the model library embedded in coolsolve.exe is the tag
-:: (or branch) named by the LIBRARY_TAG environment variable, "main" by
-:: default. A release embeds the tagged library, e.g.:
-::   set "LIBRARY_TAG=v0.4"
-::   build_installer.bat
+:: Auto-detects:
+::   - Git (on PATH)
+::   - Node.js & npm (for GUI frontend build)
+::   - Python 3 (WinPython, Anaconda, python.org, or on PATH)
+::   - CMake (standalone or bundled in Visual Studio)
+::   - Visual Studio 2022 / C++ Build Tools (if compiling from source)
+::   - NSIS makensis (for Windows installer creation)
 :: ============================================================
 
-:: --- Section 1: Configuration ---
-:: Path to your Anaconda installation. Used to activate the conda env
-:: below AND as one of the Python lookup locations. Harmless if absent.
-set "ANACONDA_DIR=E:\Anaconda"
-set "CONDA_ENV=fast_numpy_env"
+:: --- Section 1: Configuration & Defaults ---
+set "PROJECT_DIR=%~dp0"
+if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
-:: CMake shipped with Visual Studio 2022 (Build Tools or Community). When it
-:: is not there, the cmake found on PATH is used (checked in Section 2).
-set "CMAKE_EXE=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-if not exist "%CMAKE_EXE%" set "CMAKE_EXE=cmake"
-
-:: Tag or branch of the model library to embed (see the header). It is always
-:: passed to CMake: a build directory keeps the tag it cached, so a release
-:: tag would otherwise stay in the cache of later development builds.
 if not defined LIBRARY_TAG set "LIBRARY_TAG=main"
 
-:: NSIS installer compiler.
-set "MAKENSIS_EXE=C:\Program Files (x86)\NSIS\makensis.exe"
-if not exist "%MAKENSIS_EXE%" set "MAKENSIS_EXE=C:\Program Files\NSIS\makensis.exe"
-
-:: Override PYTHON_EXE to force a specific Python interpreter, e.g.:
-::   set "PYTHON_EXE=C:\Anaconda3\python.exe"
-:: Otherwise the script auto-discovers Python (see :find_python below).
-
-:: Root of the project (directory containing this bat file)
-set "PROJECT_DIR=%~dp0"
-set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
-
-:: --- Section 2: Environment setup (Anaconda PATH + Python discovery) ---
-echo [1/5] Setting up environment...
-
-:: Prepend Anaconda to PATH (no-op if ANACONDA_DIR does not exist).
-set "PATH=%ANACONDA_DIR%;%ANACONDA_DIR%\Scripts;%ANACONDA_DIR%\Library\bin;%PATH%"
-
-:: Activate the conda environment if Anaconda is installed (sets
-:: CONDA_PREFIX etc.). Harmless if activate.bat is missing.
-if exist "%ANACONDA_DIR%\Scripts\activate.bat" (
-    call "%ANACONDA_DIR%\Scripts\activate.bat" %CONDA_ENV%
-) else (
-    echo WARNING: Anaconda not found at "%ANACONDA_DIR%" — relying on Python auto-discovery.
-)
-
-:: Git: FetchContent clones CoolProp and the model library at configure time.
-where git >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo ERROR: git was not found on PATH. CMake needs it to fetch CoolProp
-    echo        and the model library. Install Git for Windows
-    echo        ^(https://git-scm.com/download/win^) and re-run this script.
-    echo.
-    pause
-    exit /b 1
-)
-
-:: CMake: the one of Visual Studio 2022 (Section 1) or, failing that, the one on PATH.
-if /i "%CMAKE_EXE%"=="cmake" (
-    where cmake >nul 2>&1
-    if errorlevel 1 (
-        echo.
-        echo ERROR: cmake was not found: neither the Visual Studio 2022 one ^(see CMAKE_EXE
-        echo        in Section 1^) nor one on PATH. Install CMake or the Visual Studio 2022
-        echo        C++ Desktop Development workload, then re-run this script.
-        echo.
-        pause
-        exit /b 1
-    )
-)
-
-:: CoolProp's CMake calls find_package(Python) at configure time and
-:: aborts if no interpreter is found. Resolve Python once here and pass
-:: it explicitly via -DPython_EXECUTABLE so the build does not silently
-:: depend on the right conda env being active.
+:: Auto-locate Python 3
 call :find_python
 if errorlevel 1 (
     echo.
-    echo ERROR: Python interpreter not found. CoolProp's CMake scripts
-    echo        require Python 3 at configure time.
-    echo.
-    echo        I tried, in order:
-    echo          1. The PYTHON_EXE environment variable ^(full path override^)
-    echo          2. "python" on PATH
-    echo          3. "%ANACONDA_DIR%\envs\%CONDA_ENV%\python.exe"
-    echo          4. "%ANACONDA_DIR%\python.exe"
-    echo          5. Common Anaconda / Miniconda / Python.org install locations
-    echo.
-    echo        Fix: set the PYTHON_EXE environment variable to the full
-    echo        path of your python.exe, then re-run this script. Example:
-    echo.
-    echo          set "PYTHON_EXE=C:\Anaconda3\python.exe"
-    echo          build_installer.bat
-    echo.
-    echo        Or install Python 3 from https://www.python.org/downloads/
-    echo        or Anaconda from https://www.anaconda.com/download/
-    echo.
+    echo ERROR: Python 3 interpreter was not found.
+    echo Install Python from https://www.python.org or via:
+    echo   winget install Python.Python.3.12
     pause
     exit /b 1
 )
-echo        Using Python: "%PYTHON_EXE%"
-"%PYTHON_EXE%" --version
+
+:: Auto-locate CMake
+call :find_cmake
+
+:: Auto-locate NSIS
+call :find_nsis
+
+:: --- Section 2: Environment verification ---
+echo [1/5] Verifying environment...
+echo        Python:   "%PYTHON_EXE%"
+if defined CMAKE_EXE (
+    echo        CMake:    "%CMAKE_EXE%"
+) else (
+    echo        CMake:    [Not found - will use existing binary if available]
+)
+if defined MAKENSIS_EXE (
+    echo        NSIS:     "%MAKENSIS_EXE%"
+) else (
+    echo        NSIS:     [Not found]
+)
+
+where git >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: git was not found on PATH. Install Git for Windows
+    echo   ^(https://git-scm.com/download/win^) or run: winget install Git.Git
+    pause
+    exit /b 1
+)
 
 :: --- Section 3: Build the React GUI frontend ---
 echo [2/5] Building React GUI frontend (npm run build)...
 where node >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo WARNING: Node.js not found in PATH. Skipping GUI frontend build.
-    echo          The server will launch in dev mode ^(GUI served from filesystem^).
-    echo          To embed the GUI, install Node.js ^(https://nodejs.org^) and re-run.
     goto :skip_npm
 )
+
 cd "%PROJECT_DIR%\gui"
-call npm ci
-if %ERRORLEVEL% neq 0 (
-    echo Error running npm ci.
-    pause
-    exit /b %ERRORLEVEL%
+if not exist "node_modules" (
+    echo Installing frontend dependencies...
+    call npm install
 )
 call npm run build
 if %ERRORLEVEL% neq 0 (
@@ -142,59 +79,88 @@ if %ERRORLEVEL% neq 0 (
     pause
     exit /b %ERRORLEVEL%
 )
+cd "%PROJECT_DIR%"
 :skip_npm
 
-:: --- Section 4: Configure CMake ---
-:: -DPython_EXECUTABLE makes FindPython use the interpreter resolved above,
-:: independent of which conda env (if any) is currently active.
+:: --- Section 4 & 5: Configure and Compile CoolSolve ---
+if not exist "%PROJECT_DIR%\build\Release" mkdir "%PROJECT_DIR%\build\Release"
+
+if not defined CMAKE_EXE goto :no_cmake
+
 echo [3/5] Configuring CMake...
-if not exist "%PROJECT_DIR%\build" mkdir "%PROJECT_DIR%\build"
 cd "%PROJECT_DIR%\build"
-echo        Model library: %LIBRARY_TAG%
-:: The embedded library is about 50 MB of C++ arrays: the 32-bit MSVC host
-:: compiler can run out of heap on it (C1060). Ask MSBuild for the 64-bit host
-:: tools; unlike -T host=x64 this does not change the generator settings cached
-:: in an existing build directory.
 set "PreferredToolArchitecture=x64"
 "%CMAKE_EXE%" "%PROJECT_DIR%" -G "Visual Studio 17 2022" -A x64 -DCOOLSOLVE_BUILD_GUI=ON -DCOOLSOLVE_BUILD_TESTS=OFF -DCOOLSOLVE_LIBRARY_TAG="%LIBRARY_TAG%" -DPython_EXECUTABLE="%PYTHON_EXE%"
-if %ERRORLEVEL% neq 0 (
-    echo Error during CMake configuration.
-    pause
-    exit /b %ERRORLEVEL%
-)
+if errorlevel 1 goto :cmake_failed
 
-:: --- Section 5: Compile ---
 echo [4/5] Compiling CoolSolve with GUI (Release)...
+taskkill /F /IM coolsolve.exe >nul 2>&1
 "%CMAKE_EXE%" --build . --config Release --target coolsolve
-if %ERRORLEVEL% neq 0 (
+if errorlevel 1 (
     echo Error during compilation.
     pause
-    exit /b %ERRORLEVEL%
+    exit /b 1
+)
+goto :after_compile
+
+:cmake_failed
+echo CMake configuration with Visual Studio 17 2022 did not complete.
+cd "%PROJECT_DIR%"
+
+:no_cmake
+
+:: Fallback if CMake or VS C++ is absent: use installed or existing binary
+if exist "%PROJECT_DIR%\build\Release\coolsolve.exe" (
+    echo [3/5] Using existing binary at build\Release\coolsolve.exe
+    goto :after_compile
 )
 
-:: --- Section 6: Generate installer ---
+if exist "C:\Program Files\CoolSolve\coolsolve.exe" (
+    echo [3/5] Copying binary from C:\Program Files\CoolSolve\coolsolve.exe
+    copy /y "C:\Program Files\CoolSolve\coolsolve.exe" "%PROJECT_DIR%\build\Release\coolsolve.exe" >nul
+    goto :after_compile
+)
+
+echo.
+echo ERROR: coolsolve.exe could not be compiled and was not found in:
+echo   - %PROJECT_DIR%\build\Release\coolsolve.exe
+echo   - C:\Program Files\CoolSolve\coolsolve.exe
+echo.
+echo To compile from source, install Visual Studio 2022 C++ Build Tools and CMake:
+echo   winget install Microsoft.VisualStudio.2022.BuildTools
+echo   winget install Kitware.CMake
+pause
+exit /b 1
+
+:after_compile
+
+:: --- Section 6: Generate installer with NSIS ---
 echo [5/5] Generating Windows Installer...
 cd "%PROJECT_DIR%"
+if not defined MAKENSIS_EXE goto :no_nsis
 if not exist "%MAKENSIS_EXE%" goto :no_nsis
+
 "%MAKENSIS_EXE%" "%PROJECT_DIR%\coolsolve.nsi"
 if errorlevel 1 (
     echo Error during installer generation.
     pause
     exit /b 1
 )
-:: The installer is named after the version in coolsolve.nsi (CoolSolve_v<VERSION>_Installer.exe).
+
 set "INSTALLER_NAME="
-for /f "delims=" %%F in ('dir /b /o-d "%PROJECT_DIR%\CoolSolve_v*_Installer.exe" 2^>nul') do if not defined INSTALLER_NAME set "INSTALLER_NAME=%%F"
+for /f "delims=" %%F in ('dir /b /o-d "%PROJECT_DIR%\CoolSolve*_v*_Installer.exe" 2^>nul') do if not defined INSTALLER_NAME set "INSTALLER_NAME=%%F"
 echo.
+echo ============================================================
 echo SUCCESS! %INSTALLER_NAME% has been created in:
 echo   %PROJECT_DIR%
+echo ============================================================
 goto :done
 
 :no_nsis
 echo.
-echo WARNING: makensis.exe not found at "%MAKENSIS_EXE%"
-echo Install NSIS from https://nsis.sourceforge.net and rerun,
-echo or run manually:  makensis "%PROJECT_DIR%\coolsolve.nsi"
+echo NOTE: makensis.exe not found. To build the installer exe, install NSIS:
+echo   winget install NSIS.NSIS
+echo Then re-run build_installer.bat.
 
 :done
 pause
@@ -203,55 +169,23 @@ exit /b 0
 
 
 :: ============================================================
-:: Subroutine: locate the Python interpreter.
-:: Sets the PYTHON_EXE variable and returns 0 on success, 1 on failure.
-:: Search order:
-::   1. The PYTHON_EXE environment variable (user override, full path)
-::   2. "python" on PATH (via "where python" — benefits from the PATH
-::      prepend done in Section 2)
-::   3. %ANACONDA_DIR%\envs\%CONDA_ENV%\python.exe  (the conda env)
-::   4. %ANACONDA_DIR%\python.exe                    (Anaconda base)
-::   5. Common Anaconda / Miniconda / Python.org install paths
+:: Subroutine: locate Python 3
 :: ============================================================
 :find_python
-
-:: 1. User-provided override (must be a full path that exists).
 if defined PYTHON_EXE if exist "%PYTHON_EXE%" exit /b 0
 
-:: 2. "python" found on PATH (first match wins).
-for /f "delims=" %%i in ('where python 2^>nul') do (
-    set "PYTHON_EXE=%%i"
-    exit /b 0
-)
-
-:: 3. The conda env named by CONDA_ENV under ANACONDA_DIR.
-if exist "%ANACONDA_DIR%\envs\%CONDA_ENV%\python.exe" (
-    set "PYTHON_EXE=%ANACONDA_DIR%\envs\%CONDA_ENV%\python.exe"
-    exit /b 0
-)
-
-:: 4. Anaconda base environment.
-if exist "%ANACONDA_DIR%\python.exe" (
-    set "PYTHON_EXE=%ANACONDA_DIR%\python.exe"
-    exit /b 0
-)
-
-:: 5. Common install locations for Anaconda, Miniconda, and python.org.
+:: 1. WinPython user installations
 for %%P in (
-    "C:\Anaconda\python.exe"
-    "C:\Anaconda3\python.exe"
-    "C:\ProgramData\Anaconda3\python.exe"
-    "C:\ProgramData\miniconda3\python.exe"
+    "%USERPROFILE%\Python\WinPython\python\python.exe"
+    "C:\Users\dacts\Python\WinPython\python\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
-    "%USERPROFILE%\Anaconda3\python.exe"
-    "%USERPROFILE%\miniconda3\python.exe"
-    "C:\Python313\python.exe"
     "C:\Python312\python.exe"
     "C:\Python311\python.exe"
-    "C:\Python310\python.exe"
+    "C:\Anaconda3\python.exe"
+    "C:\ProgramData\Anaconda3\python.exe"
 ) do (
     if exist %%~P (
         set "PYTHON_EXE=%%~P"
@@ -259,5 +193,69 @@ for %%P in (
     )
 )
 
-:: Not found anywhere.
+:: 2. python on PATH
+for /f "delims=" %%i in ('where python 2^>nul') do (
+    %%i --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PYTHON_EXE=%%i"
+        exit /b 0
+    )
+)
 exit /b 1
+
+
+:: ============================================================
+:: Subroutine: locate CMake
+:: ============================================================
+:find_cmake
+if defined CMAKE_EXE if exist "%CMAKE_EXE%" exit /b 0
+
+for /f "delims=" %%i in ('where cmake 2^>nul') do (
+    set "CMAKE_EXE=%%i"
+    exit /b 0
+)
+
+for %%C in (
+    "C:\Program Files\CMake\bin\cmake.exe"
+    "C:\Program Files (x86)\CMake\bin\cmake.exe"
+    "%LOCALAPPDATA%\Programs\CMake\bin\cmake.exe"
+    "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+) do (
+    if exist %%~C (
+        set "CMAKE_EXE=%%~C"
+        exit /b 0
+    )
+)
+set "CMAKE_EXE="
+exit /b 0
+
+
+:: ============================================================
+:: Subroutine: locate NSIS (makensis.exe)
+:: ============================================================
+:find_nsis
+if defined MAKENSIS_EXE if exist "%MAKENSIS_EXE%" exit /b 0
+
+for /f "delims=" %%i in ('where makensis 2^>nul') do (
+    set "MAKENSIS_EXE=%%i"
+    exit /b 0
+)
+
+for %%M in (
+    "C:\Program Files\NSIS\makensis.exe"
+    "C:\Program Files (x86)\NSIS\makensis.exe"
+    "%LOCALAPPDATA%\Programs\NSIS\makensis.exe"
+    "%PROGRAMFILES%\NSIS\Bin\makensis.exe"
+    "%PROGRAMFILES(X86)%\NSIS\Bin\makensis.exe"
+) do (
+    if exist %%~M (
+        set "MAKENSIS_EXE=%%~M"
+        exit /b 0
+    )
+)
+set "MAKENSIS_EXE="
+exit /b 0

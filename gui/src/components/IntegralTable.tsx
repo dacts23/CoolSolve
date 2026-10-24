@@ -1,3 +1,4 @@
+import Select from './Select';
 /**
  * IntegralTable.tsx — Bottom-panel tab for the equation-based dynamic
  * (INTEGRAL / $IntegralTable) trajectory.
@@ -6,7 +7,7 @@
  * (integration variable always first), a row count, an "Export CSV"
  * button, an optional line plot of one tabulated variable versus the
  * integration variable, and an empty-state message when no integral has
- * been solved. Read-only — EES Integral Tables are not user-editable.
+ * been solved. Read-only — Integral Tables are generated from solution trajectories.
  *
  * Data sources (in priority order):
  *   1. `integralTable` (columnar JSON from a live solve response)
@@ -144,9 +145,9 @@ export default function IntegralTable() {
         name: plotYVar,
       }],
       layout: {
-        xaxis: { title: { text: table.integrationVar }, gridcolor: '#e5e7eb' },
-        yaxis: { title: { text: plotYVar }, gridcolor: '#e5e7eb' },
-        margin: { t: 20, r: 20, b: 45, l: 60 },
+        xaxis: { title: { text: table.integrationVar } },
+        yaxis: { title: { text: plotYVar } },
+        margin: { t: 20, r: 45, b: 45, l: 60 },
         paper_bgcolor: 'transparent',
         plot_bgcolor: 'transparent',
         font: { family: 'system-ui, sans-serif', size: 11 },
@@ -198,7 +199,7 @@ export default function IntegralTable() {
           {stepInfo && <span className="integral-meta"> · {stepInfo}</span>}
         </div>
         <button
-          className="parametric-run-btn"
+          className="btn-secondary"
           onClick={handleExport}
           title={`Export the trajectory as ${table.csvName || 'integral.csv'}`}
         >
@@ -211,15 +212,12 @@ export default function IntegralTable() {
         <>
           <div className="parametric-plot-controls">
             <label>Y variable:</label>
-            <select
-              className="sweep-select"
+            <Select
               value={plotYVar}
-              onChange={(e) => setPlotYVar(e.target.value)}
-            >
-              {plotCandidates.map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
+              options={plotCandidates}
+              onChange={setPlotYVar}
+              style={{ minWidth: 120 }}
+            />
           </div>
           {plotData.data.length > 0 && (
             <div className="parametric-plot">

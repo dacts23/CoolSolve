@@ -28,7 +28,7 @@ export function setEditorInstance(editor: Monaco.editor.IStandaloneCodeEditor | 
 }
 
 /**
- * Toggle EES invisible comment: wraps/unwraps selected lines in { ... }
+ * Toggle invisible comment: wraps/unwraps selected lines in { ... }
  */
 export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
   if (!editor) return;
@@ -83,7 +83,7 @@ export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor |
 }
 
 /**
- * Toggle EES visible comment: wraps/unwraps selected text in "..."
+ * Toggle visible comment: wraps/unwraps selected text in "..."
  */
 export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
   if (!editor) return;
@@ -111,4 +111,24 @@ export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor |
       text: '"' + selectedText + '"',
     }]);
   }
+}
+
+/** Insert a snippet or statement at the current cursor position in Monaco. */
+export function insertAtCursor(text: string): void {
+  if (!editorInstance) return;
+  const selection = editorInstance.getSelection();
+  if (!selection) return;
+  editorInstance.executeEdits('code-insert', [{
+    range: selection,
+    text,
+    forceMoveMarkers: true,
+  }]);
+  editorInstance.focus();
+}
+
+/** Trigger a built-in Monaco editor action by id (e.g. 'undo', 'redo', 'actions.find'). */
+export function triggerEditorAction(actionId: string): void {
+  if (!editorInstance) return;
+  editorInstance.focus();
+  editorInstance.trigger('menu', actionId, null);
 }

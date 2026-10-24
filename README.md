@@ -2,7 +2,25 @@
   <img src="docs/logo_coolsolve.png" alt="CoolSolve" width="200">
 </p>
 
-# CoolSolve
+# CoolSolve-Canary
+
+> **About this fork (`CoolSolve-Canary`)**  
+> **CoolSolve-Canary** is a GUI-focused fork of **[CoolProp/CoolSolve](https://github.com/CoolProp/CoolSolve)**, originally created and developed by **[Sylvain Quoilin](https://github.com/squoilin)** (`squoilin@ulg.ac.be`).  
+>
+> All credit for the parser, structural analyzer, automatic differentiation, solver pipeline, CoolProp integration, and core architecture belongs to **Sylvain Quoilin** and the **CoolProp** project. This fork strictly experiments with frontend GUI and UX improvements (IDE-style workspace layout, multi-tabbed editor, theme palettes, resizable subpanels, and diagram interactions) designed to be upstreamed back to the main repository.
+
+### Code Editor & Solution Workspace
+![CoolSolve-Canary Code Editor](docs/canary_editor.png)
+
+### Parametric Sweep Study
+![CoolSolve-Canary Parametric Study](docs/canary_parametric.png)
+
+### Thermodynamic Property Diagrams
+![CoolSolve-Canary Property Diagrams](docs/canary_diagrams.png)
+
+---
+
+# CoolSolve (Upstream Documentation)
 
 CoolSolve is a parser, structural analyzer, and equation solver using a language compatible with EES (Engineering Equation Solver), designed as an open-source alternative that integrates with CoolProp for thermodynamic property calculations.
 

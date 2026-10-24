@@ -8,6 +8,7 @@ interface SplitPaneProps {
   children: [React.ReactNode, React.ReactNode];
   className?: string;
   onResize?: (size: number) => void;
+  collapsed?: 'first' | 'second' | false;
 }
 
 export default function SplitPane({
@@ -18,6 +19,7 @@ export default function SplitPane({
   children,
   className = '',
   onResize,
+  collapsed = false,
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(defaultSize);
@@ -28,6 +30,7 @@ export default function SplitPane({
     dragging.current = true;
     document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
+    document.body.classList.add('is-resizing-pane');
   }, [direction]);
 
   useEffect(() => {
@@ -48,7 +51,7 @@ export default function SplitPane({
       // Apply min/max constraints
       const containerPx = direction === 'horizontal' ? rect.width : rect.height;
       const minPct = (minSize / containerPx) * 100;
-      const maxPct = maxSize ? (maxSize / containerPx) * 100 : 90;
+      const maxPct = maxSize ? (maxSize / containerPx) * 100 : Math.max(minPct, ((containerPx - minSize) / containerPx) * 100);
 
       newSize = Math.max(minPct, Math.min(maxPct, newSize));
       setSize(newSize);
@@ -60,6 +63,7 @@ export default function SplitPane({
         dragging.current = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+        document.body.classList.remove('is-resizing-pane');
       }
     };
 
@@ -72,6 +76,8 @@ export default function SplitPane({
   }, [direction, minSize, maxSize, onResize]);
 
   const isHorizontal = direction === 'horizontal';
+  const isFirstCollapsed = collapsed === 'first';
+  const isSecondCollapsed = collapsed === 'second';
 
   return (
     <div
@@ -90,9 +96,11 @@ export default function SplitPane({
       <div
         className="split-pane-first"
         style={{
-          [isHorizontal ? 'width' : 'height']: `${size}%`,
-          minWidth: isHorizontal ? minSize : undefined,
-          minHeight: !isHorizontal ? minSize : undefined,
+          [isHorizontal ? 'width' : 'height']: isFirstCollapsed ? 'auto' : `${size}%`,
+          minWidth: !isFirstCollapsed && isHorizontal ? minSize : undefined,
+          minHeight: !isFirstCollapsed && !isHorizontal ? minSize : undefined,
+          flex: isSecondCollapsed ? 1 : undefined,
+          flexShrink: isFirstCollapsed ? 0 : undefined,
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -102,18 +110,24 @@ export default function SplitPane({
       </div>
 
       {/* Divider */}
-      <div
-        className={`split-divider ${isHorizontal ? 'split-divider-h' : 'split-divider-v'}`}
-        onMouseDown={handleMouseDown}
-      />
+      {!collapsed && (
+        <div
+          className={`split-divider ${isHorizontal ? 'split-divider-h' : 'split-divider-v'}`}
+          onMouseDown={handleMouseDown}
+          onDoubleClick={() => setSize(defaultSize)}
+          title="Drag to resize, double-click to reset"
+        />
+      )}
 
       {/* Second pane */}
       <div
         className="split-pane-second"
         style={{
-          flex: 1,
-          minWidth: isHorizontal ? minSize : undefined,
-          minHeight: !isHorizontal ? minSize : undefined,
+          [isHorizontal ? 'width' : 'height']: isSecondCollapsed ? 'auto' : undefined,
+          flex: isSecondCollapsed ? undefined : 1,
+          flexShrink: isSecondCollapsed ? 0 : undefined,
+          minWidth: !isSecondCollapsed && isHorizontal ? minSize : undefined,
+          minHeight: !isSecondCollapsed && !isHorizontal ? minSize : undefined,
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',

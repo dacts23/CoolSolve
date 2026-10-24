@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { BookOpen, ChevronDown, ChevronRight, ExternalLink, Search } from 'lucide-react';
+import { BookOpen, ChevronRight, ExternalLink, Search, X, Folder, FolderOpen, FileCode } from 'lucide-react';
 import { api } from '../api/client';
-import type { LibraryMenuCategory, LibraryMenuGroup, LibraryMenuModel, LibraryMenuResponse } from '../api/types';
+import type { LibraryMenuCategory, LibraryMenuModel, LibraryMenuResponse } from '../api/types';
 import { LIBRARY_DASHBOARD_URL, libraryModelPageUrl } from '../utils/library';
 
 const LEVEL_TITLES: Record<number, string> = {
@@ -29,7 +29,12 @@ export default function LibraryMenu({ onOpen }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api.getLibraryMenu().then(setMenu).catch(() => setMenu(null));
+    api.getLibraryMenu().then((res) => {
+      setMenu(res);
+      if (res?.categories?.[0]) {
+        setExpanded(new Set([res.categories[0].key]));
+      }
+    }).catch(() => setMenu(null));
   }, []);
 
   // Close on outside click / Escape
@@ -91,8 +96,12 @@ export default function LibraryMenu({ onOpen }: Props) {
           onOpen(m.id);
         }}
       >
-        <span className={`library-level level-${m.level}`}>{m.level}</span>
-        {m.title}
+        <FileCode size={13} className="library-file-icon" />
+        <span className="library-model-title">{m.title}</span>
+        <span className="library-model-id">{m.id}</span>
+        <span className={`library-level level-${m.level}`} title={LEVEL_TITLES[m.level]}>
+          L{m.level}
+        </span>
       </button>
       <a
         className="library-model-info"
@@ -105,20 +114,6 @@ export default function LibraryMenu({ onOpen }: Props) {
       </a>
     </div>
   );
-
-  const renderGroup = (key: string, group: LibraryMenuGroup, count: number, depth: number) => {
-    const isOpen = !!q || expanded.has(key);
-    return (
-      <div key={key} className={`library-group depth-${depth}`}>
-        <button className="library-group-header" onClick={() => toggle(key)} aria-expanded={isOpen}>
-          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          <span className="library-group-title">{group.title}</span>
-          <span className="library-count">{count}</span>
-        </button>
-        {isOpen && group.models.map(renderModel)}
-      </div>
-    );
-  };
 
   return (
     <div className="toolbar-group library-selector" ref={rootRef}>
@@ -138,23 +133,71 @@ export default function LibraryMenu({ onOpen }: Props) {
           ) : (
             <>
               <div className="library-search">
-                <Search size={13} />
+                <Search size={13} className="library-search-icon" />
                 <input
                   autoFocus
                   placeholder={`Search ${menu.total} verified models…`}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
+                {query && (
+                  <button className="library-search-clear" onClick={() => setQuery('')} title="Clear search">
+                    <X size={12} />
+                  </button>
+                )}
               </div>
               <div className="library-tree">
-                {categories.length === 0 && <div className="library-empty">No model matches.</div>}
-                {categories.map((cat) => (
-                  <div key={cat.key} className="library-category">
-                    {renderGroup(cat.key, cat, cat.count, 0)}
-                    {(!!q || expanded.has(cat.key)) &&
-                      cat.children.map((sub) => renderGroup(`${cat.key}/${sub.key}`, sub, sub.models.length, 1))}
+                {categories.length === 0 && (
+                  <div className="library-empty">
+                    {query ? `No model matches "${query}".` : 'No models found.'}
                   </div>
-                ))}
+                )}
+                {categories.map((cat) => {
+                  const isCatOpen = !!q || expanded.has(cat.key);
+                  return (
+                    <div key={cat.key} className="library-category">
+                      <button className="library-group-header" onClick={() => toggle(cat.key)}>
+                        <ChevronRight size={13} className={`library-chevron ${isCatOpen ? 'open' : ''}`} />
+                        {isCatOpen ? (
+                          <FolderOpen size={14} className="library-folder-icon" />
+                        ) : (
+                          <Folder size={14} className="library-folder-icon" />
+                        )}
+                        <span className="library-group-title">{cat.title}</span>
+                        <span className="library-count-pill">{cat.count}</span>
+                      </button>
+
+                      {isCatOpen && (
+                        <div className="library-children">
+                          {cat.models.map(renderModel)}
+                          {cat.children.map((sub) => {
+                            const subKey = `${cat.key}/${sub.key}`;
+                            const isSubOpen = !!q || expanded.has(subKey);
+                            return (
+                              <div key={subKey} className="library-group depth-1">
+                                <button className="library-group-header" onClick={() => toggle(subKey)}>
+                                  <ChevronRight size={13} className={`library-chevron ${isSubOpen ? 'open' : ''}`} />
+                                  {isSubOpen ? (
+                                    <FolderOpen size={14} className="library-folder-icon" />
+                                  ) : (
+                                    <Folder size={14} className="library-folder-icon" />
+                                  )}
+                                  <span className="library-group-title">{sub.title}</span>
+                                  <span className="library-count-pill">{sub.models.length}</span>
+                                </button>
+                                {isSubOpen && (
+                                  <div className="library-children">
+                                    {sub.models.map(renderModel)}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <a className="library-footer" href={LIBRARY_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
                 <ExternalLink size={13} /> Browse the whole library (all models, incl. blocked)

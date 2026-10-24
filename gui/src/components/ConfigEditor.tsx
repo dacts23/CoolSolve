@@ -3,7 +3,7 @@ import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
 import { RotateCcw, Info } from 'lucide-react';
 import Tooltip from './Tooltip';
-import ConfigSelect from './ConfigSelect';
+import Select from './Select';
 
 interface ConfigField {
   key: string;
@@ -596,7 +596,8 @@ function PipelineGroup({
           <span className="config-field-label">{deep ? 'Deep Search pipeline' : 'Pipeline'}</span>
           <span className="config-field-default">default: {deep ? 'All Solvers (Sequential)' : 'Newton'}</span>
         </label>
-        <ConfigSelect
+        <Select
+          align="right"
           value={currentPresetId}
           onChange={handlePresetChange}
           options={[
@@ -737,7 +738,8 @@ export default function ConfigEditor() {
                         <span className="config-field-default">default: {field.defaultVal}</span>
                       </label>
                       {field.type === 'boolean' ? (
-                        <ConfigSelect
+                        <Select
+          align="right"
                           value={isSet ? current : ''}
                           onChange={(v) => handleChange(field.key, v)}
                           options={[
@@ -747,7 +749,8 @@ export default function ConfigEditor() {
                           ]}
                         />
                       ) : field.options ? (
-                        <ConfigSelect
+                        <Select
+          align="right"
                           value={isSet ? current : ''}
                           onChange={(v) => handleChange(field.key, v)}
                           options={[

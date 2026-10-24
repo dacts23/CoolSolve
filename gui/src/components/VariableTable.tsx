@@ -122,7 +122,7 @@ export default function VariableTable() {
 
     vars.sort((a, b) => {
       if (a.isArray !== b.isArray) return a.isArray ? 1 : -1;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     return vars;
@@ -181,7 +181,7 @@ export default function VariableTable() {
   );
 
   return (
-    <>
+    <div className="variable-table-view">
       <div className="search-filter">
         <input
           type="text"
@@ -258,13 +258,13 @@ export default function VariableTable() {
             </tbody>
           </table>
         )}
-        {variables.length > 0 && (
-          <div style={{ padding: '4px 8px', fontSize: 11, color: 'var(--text-muted)' }}>
-            {filtered.length} of {variables.length} variables
-            {imposedCount > 0 && ` · ${imposedCount} imposed`}
-          </div>
-        )}
       </div>
-    </>
+      {variables.length > 0 && (
+        <div className="table-footer-status">
+          {filtered.length} of {variables.length} variables
+          {imposedCount > 0 && ` · ${imposedCount} imposed`}
+        </div>
+      )}
+    </div>
   );
 }

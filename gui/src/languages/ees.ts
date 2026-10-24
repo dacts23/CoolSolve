@@ -1,6 +1,6 @@
 import type * as Monaco from 'monaco-editor';
 
-export const EES_LANGUAGE_ID = 'ees';
+export const EES_LANGUAGE_ID = 'coolsolve';
 
 export function registerEESLanguage(monaco: typeof Monaco) {
   // Register language
@@ -57,6 +57,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         [/\/\/.*$/, 'comment'],
         [/\{/, 'comment', '@bracketComment'],
         [/"/, 'string', '@quoteComment'],
+        [/'/, 'string', '@singleQuoteString'],
 
         // Directives
         [/\$\w+/, 'keyword.directive'],
@@ -65,7 +66,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         [/\d+\.?\d*([eE][+-]?\d+)?/, 'number'],
         [/\.\d+([eE][+-]?\d+)?/, 'number'],
 
-        // Identifiers: letters (accented ones too), digits, _ and the symbols % | # \ ° of EES names,
+        // Identifiers: letters (accented ones too), digits, _ and the symbols % | # \ ° of equation names,
         // with the $ that ends a string variable or a string function (LOOKUP$), and the $ inside LOOKUP$ROW
         [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*(?:\$row(?=\s*\())?\$?/, {
           cases: {
@@ -104,11 +105,22 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         [/"/, 'string', '@pop'],
       ],
 
+      singleQuoteString: [
+        [/[^'\\]+/, 'string'],
+        [/\\./, 'string.escape'],
+        [/'/, 'string', '@pop'],
+        [/$/, 'string', '@pop'],
+      ],
+
       array: [
-        [/\d+/, 'number'],
-        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*/, 'identifier'],
         [/\]/, 'delimiter.bracket', '@pop'],
-        [/[+\-*/]/, 'operator'],
+        [/\d+\.?\d*([eE][+-]?\d+)?/, 'number'],
+        [/\.\./, 'operator'],
+        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*/, 'identifier'],
+        [/[+\-*/^.,:;()]/, 'operator'],
+        [/\s+/, 'white'],
+        [/[^\]\s]+/, 'type'],
+        [/$/, '', '@pop'],
       ],
     },
   });

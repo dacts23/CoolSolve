@@ -28,7 +28,7 @@ export default function Console() {
     <div className="console" ref={containerRef}>
       {consoleLines.length === 0 ? (
         <div className="console-line" style={{ color: 'var(--text-muted)' }}>
-          Ready. Open a file or paste EES code to begin.
+          Ready. Open a file or enter equations to begin.
         </div>
       ) : (
         consoleLines.map((line, i) => (

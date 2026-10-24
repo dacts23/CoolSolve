@@ -1,5 +1,28 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData } from '../api/types';
+import type {
+  SolveResponse,
+  ParseError,
+  SolvedVariable,
+  VariableInfo,
+  SavedParametricStudy,
+  UserUnitOverride,
+  LookupTableInfo,
+  IntegralTableData,
+} from '../api/types';
+import { api } from '../api/client';
+
+export interface EditorTab {
+  id: string;
+  name: string;
+  filePath: string;
+  modelName: string;
+  libraryId: string;
+  eescode: string;
+  initials: string;
+  sol: string;
+  conf: string;
+  dirty: boolean;
+}
 
 interface ModelState {
   // File state
@@ -14,12 +37,21 @@ interface ModelState {
   dirty: boolean;
   canGoBack: boolean;
 
+  // Multi-tab open files
+  openTabs: EditorTab[];
+  activeTabId: string;
+  switchTab: (id: string) => void;
+  closeTab: (id: string) => void;
+  closeOtherTabs: (id: string) => void;
+  renameTab: (id: string, newName: string) => void;
+  newTab: () => void;
+
   // Parse state
   parseErrors: ParseError[];
   equationCount: number;
   variableCount: number;
   isSquare: boolean;
-  parsedVariables: VariableInfo[];  // Variable info from last parse (units, imposed, etc.)
+  parsedVariables: VariableInfo[]; // Variable info from last parse (units, imposed, etc.)
 
   // Solve state
   solving: boolean;
@@ -37,12 +69,14 @@ interface ModelState {
   parametricStudies: SavedParametricStudy[];
 
   // Integral (INTEGRAL/$IntegralTable) trajectory
-  integralTable: IntegralTableData | null;  // columnar table (live solve)
-  integralCSV: string;                       // raw CSV text (round-trip via ZIP)
+  integralTable: IntegralTableData | null; // columnar table (live solve)
+  integralCSV: string; // raw CSV text (round-trip via ZIP)
 
   // Lookup tables
   lookupTables: LookupTableInfo[];
-  lookupTableCSVs: Record<string, string>;  // name → raw CSV content
+  lookupTableCSVs: Record<string, string>; // name → raw CSV content
+  selectedLookupTable: string | null;
+  setSelectedLookupTable: (name: string | null) => void;
 
   // User unit overrides (GUI-specified units)
   userUnitOverrides: UserUnitOverride[];
@@ -67,7 +101,15 @@ interface ModelState {
   setCanGoBack: (canGoBack: boolean) => void;
   addConsoleLine: (line: string) => void;
   clearConsole: () => void;
-  loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string, modelName?: string, libraryId?: string) => void;
+  loadFile: (
+    path: string,
+    eescode: string,
+    initials: string,
+    sol: string,
+    conf: string,
+    modelName?: string,
+    libraryId?: string
+  ) => void;
   clearModel: () => void;
   addParametricStudy: (study: SavedParametricStudy) => void;
   removeParametricStudy: (id: string) => void;
@@ -79,6 +121,7 @@ interface ModelState {
   setLookupTables: (tables: LookupTableInfo[]) => void;
   setLookupTableCSV: (name: string, csv: string) => void;
   removeLookupTable: (name: string) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
@@ -91,6 +134,22 @@ export const useModelStore = create<ModelState>((set) => ({
   conf: '',
   dirty: false,
   canGoBack: false,
+
+  openTabs: [
+    {
+      id: 'default',
+      name: 'untitled.eescode',
+      filePath: '',
+      modelName: '',
+      libraryId: '',
+      eescode: '',
+      initials: '',
+      sol: '',
+      conf: '',
+      dirty: false,
+    },
+  ],
+  activeTabId: 'default',
 
   parseErrors: [],
   equationCount: 0,
@@ -108,12 +167,184 @@ export const useModelStore = create<ModelState>((set) => ({
   userUnitOverrides: [],
   lookupTables: [],
   lookupTableCSVs: {},
+  selectedLookupTable: null,
+  setSelectedLookupTable: (selectedLookupTable) => set({ selectedLookupTable }),
   integralTable: null,
   integralCSV: '',
 
   consoleLines: [],
 
-  setEescode: (code) => set({ eescode: code, dirty: true, tryHarderAvailable: false }),
+  switchTab: (id) =>
+    set((state) => {
+      if (id === state.activeTabId) return state;
+      const target = state.openTabs.find((t) => t.id === id);
+      if (!target) return state;
+      api.putEescode(target.eescode).catch(() => {});
+      return {
+        activeTabId: id,
+        filePath: target.filePath,
+        modelName: target.modelName,
+        libraryId: target.libraryId,
+        eescode: target.eescode,
+        initials: target.initials,
+        sol: target.sol,
+        conf: target.conf,
+        dirty: target.dirty,
+        lastResult: null,
+      };
+    }),
+
+  closeTab: (id) =>
+    set((state) => {
+      const tabIndex = state.openTabs.findIndex((t) => t.id === id);
+      if (tabIndex < 0) return state;
+
+      const remaining = state.openTabs.filter((t) => t.id !== id);
+      if (remaining.length === 0) {
+        const blankId = `tab-${Date.now()}`;
+        const blankTab: EditorTab = {
+          id: blankId,
+          name: 'untitled.eescode',
+          filePath: '',
+          modelName: '',
+          libraryId: '',
+          eescode: '',
+          initials: '',
+          sol: '',
+          conf: '',
+          dirty: false,
+        };
+        api.putEescode('').catch(() => {});
+        return {
+          openTabs: [blankTab],
+          activeTabId: blankId,
+          filePath: '',
+          modelName: '',
+          libraryId: '',
+          eescode: '',
+          initials: '',
+          sol: '',
+          conf: '',
+          dirty: false,
+          lastResult: null,
+        };
+      }
+
+      if (id === state.activeTabId) {
+        const nextIndex = Math.min(tabIndex, remaining.length - 1);
+        const nextTab = remaining[nextIndex];
+        api.putEescode(nextTab.eescode).catch(() => {});
+        return {
+          openTabs: remaining,
+          activeTabId: nextTab.id,
+          filePath: nextTab.filePath,
+          modelName: nextTab.modelName,
+          libraryId: nextTab.libraryId,
+          eescode: nextTab.eescode,
+          initials: nextTab.initials,
+          sol: nextTab.sol,
+          conf: nextTab.conf,
+          dirty: nextTab.dirty,
+          lastResult: null,
+        };
+      }
+
+      return { openTabs: remaining };
+    }),
+
+  closeOtherTabs: (id) =>
+    set((state) => {
+      const target = state.openTabs.find((t) => t.id === id);
+      if (!target) return state;
+      api.putEescode(target.eescode).catch(() => {});
+      return {
+        openTabs: [target],
+        activeTabId: target.id,
+        filePath: target.filePath,
+        modelName: target.modelName,
+        libraryId: target.libraryId,
+        eescode: target.eescode,
+        initials: target.initials,
+        sol: target.sol,
+        conf: target.conf,
+        dirty: target.dirty,
+        lastResult: null,
+      };
+    }),
+
+  renameTab: (id, newName) =>
+    set((state) => {
+      const stem = newName.replace(/\.[^.]+$/, '') || 'model';
+      const ext = newName.includes('.') ? '' : '.eescode';
+      const fullName = `${newName}${ext}`;
+      const openTabs = state.openTabs.map((t) =>
+        t.id === id ? { ...t, name: fullName, modelName: stem } : t
+      );
+      if (id === state.activeTabId) {
+        api.setModelName(stem).catch(() => {});
+        return { openTabs, modelName: stem };
+      }
+      return { openTabs };
+    }),
+
+  reorderTabs: (fromIndex, toIndex) =>
+    set((state) => {
+      if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= state.openTabs.length ||
+        toIndex >= state.openTabs.length
+      ) {
+        return state;
+      }
+      const updated = [...state.openTabs];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return { openTabs: updated };
+    }),
+
+  newTab: () =>
+    set((state) => {
+      const untitledCount = state.openTabs.filter((t) => t.name.startsWith('untitled')).length;
+      const name = untitledCount === 0 ? 'untitled.eescode' : `untitled-${untitledCount + 1}.eescode`;
+      const id = `tab-${Date.now()}`;
+      const newTab: EditorTab = {
+        id,
+        name,
+        filePath: '',
+        modelName: '',
+        libraryId: '',
+        eescode: '',
+        initials: '',
+        sol: '',
+        conf: '',
+        dirty: false,
+      };
+      api.putEescode('').catch(() => {});
+      return {
+        openTabs: [...state.openTabs, newTab],
+        activeTabId: id,
+        filePath: '',
+        modelName: '',
+        libraryId: '',
+        eescode: '',
+        initials: '',
+        sol: '',
+        conf: '',
+        dirty: false,
+        lastResult: null,
+      };
+    }),
+
+  setEescode: (code) =>
+    set((state) => {
+      const dirty = code !== state.eescode ? true : state.dirty;
+      const openTabs = state.openTabs.map((t) =>
+        t.id === state.activeTabId ? { ...t, eescode: code, dirty } : t
+      );
+      return { eescode: code, dirty, openTabs, tryHarderAvailable: false };
+    }),
   setInitials: (initials) => set({ initials, tryHarderAvailable: false }),
   setConf: (conf) => set({ conf, tryHarderAvailable: false }),
   setFilePath: (path) => set({ filePath: path }),
@@ -129,12 +360,113 @@ export const useModelStore = create<ModelState>((set) => ({
   setSol: (sol) => set({ sol }),
   setCanGoBack: (canGoBack) => set({ canGoBack }),
   addConsoleLine: (line) =>
-    set((state) => ({ consoleLines: [...state.consoleLines, line] })),
+    set((state) => ({
+      consoleLines:
+        state.consoleLines.length >= 1000
+          ? [...state.consoleLines.slice(-999), line]
+          : [...state.consoleLines, line],
+    })),
   clearConsole: () => set({ consoleLines: [] }),
+
   loadFile: (path, eescode, initials, sol, conf, modelName, libraryId) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set((state) => {
+      const name = modelName
+        ? `${modelName}.eescode`
+        : path
+          ? path.split(/[\\/]/).pop() || 'untitled.eescode'
+          : 'untitled.eescode';
+      const id = path || libraryId || (modelName ? `model-${modelName}` : `tab-${Date.now()}`);
+
+      const existingIndex = state.openTabs.findIndex((t) => t.id === id || t.name === name);
+      let newTabs: EditorTab[];
+      if (existingIndex >= 0) {
+        newTabs = [...state.openTabs];
+        newTabs[existingIndex] = {
+          ...newTabs[existingIndex],
+          name,
+          filePath: path,
+          modelName: modelName ?? '',
+          libraryId: libraryId ?? '',
+          eescode,
+          initials,
+          sol,
+          conf,
+          dirty: false,
+        };
+      } else {
+        const isSingleUntouched =
+          state.openTabs.length === 1 &&
+          state.openTabs[0].name === 'untitled.eescode' &&
+          !state.openTabs[0].dirty &&
+          !state.openTabs[0].eescode.trim();
+
+        const newTab: EditorTab = {
+          id,
+          name,
+          filePath: path,
+          modelName: modelName ?? '',
+          libraryId: libraryId ?? '',
+          eescode,
+          initials,
+          sol,
+          conf,
+          dirty: false,
+        };
+        newTabs = isSingleUntouched ? [newTab] : [...state.openTabs, newTab];
+      }
+
+      return {
+        filePath: path,
+        eescode,
+        initials,
+        sol,
+        conf,
+        dirty: false,
+        lastResult: null,
+        solvedVariables: [],
+        consoleLines: [],
+        modelName: modelName ?? '',
+        libraryId: libraryId ?? '',
+        parametricStudies: [],
+        parsedVariables: [],
+        lookupTables: [],
+        lookupTableCSVs: {},
+        integralTable: null,
+        integralCSV: '',
+        tryHarderAvailable: false,
+        deepSearchRunning: false,
+        openTabs: newTabs,
+        activeTabId: id,
+      };
+    }),
+
   clearModel: () =>
-    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({
+      filePath: '',
+      modelName: '',
+      libraryId: '',
+      eescode: '',
+      initials: '',
+      sol: '',
+      conf: '',
+      dirty: false,
+      lastResult: null,
+      solvedVariables: [],
+      consoleLines: [],
+      parseErrors: [],
+      equationCount: 0,
+      variableCount: 0,
+      isSquare: true,
+      parametricStudies: [],
+      parsedVariables: [],
+      userUnitOverrides: [],
+      lookupTables: [],
+      lookupTableCSVs: {},
+      integralTable: null,
+      integralCSV: '',
+      tryHarderAvailable: false,
+      deepSearchRunning: false,
+    }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>

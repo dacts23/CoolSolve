@@ -1,9 +1,12 @@
-import { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect, useState } from 'react';
+import { X, Plus, FileCode, ChevronLeft, ChevronRight } from 'lucide-react';
 import type * as Monaco from 'monaco-editor';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { registerEESLanguage, EES_LANGUAGE_ID } from '../languages/ees';
+import { defineEditorThemes, resolveEditorTheme, getActiveEditorBg } from '../languages/editorThemes';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
+import { fontCss, DEFAULT_EDITOR_FONT_SIZE } from '../utils/appearance';
 import { api } from '../api/client';
 import { setEditorInstance, toggleBraceComment, toggleQuoteComment } from './editorUtils';
 
@@ -14,36 +17,185 @@ export default function CodeEditor() {
   const setEescode = useModelStore((s) => s.setEescode);
   const setParseResult = useModelStore((s) => s.setParseResult);
   const theme = useUIStore((s) => s.theme);
+  const palette = useUIStore((s) => s.palette);
+  const editorTheme = useUIStore((s) => s.editorTheme);
+  const editorFont = useUIStore((s) => s.editorFont);
+  const editorFontSize = useUIStore((s) => s.editorFontSize);
+  const setEditorFontSize = useUIStore((s) => s.setEditorFontSize);
+  const stepEditorFontSize = useUIStore((s) => s.stepEditorFontSize);
+  const forceAppBg = useUIStore((s) => s.forceAppBg);
+  const minimap = useUIStore((s) => s.minimap);
+  const wordWrap = useUIStore((s) => s.wordWrap);
+  const stickyScroll = useUIStore((s) => s.stickyScroll);
+  const showUnderlines = useUIStore((s) => s.showUnderlines);
+  const editorBodyRef = useRef<HTMLDivElement>(null);
+  const [cursor, setCursor] = useState({ line: 1, col: 1 });
+  const [selLen, setSelLen] = useState(0);
+  const parseErrors = useModelStore((s) => s.parseErrors);
+  const equationCount = useModelStore((s) => s.equationCount);
+  const variableCount = useModelStore((s) => s.variableCount);
+  const isSquare = useModelStore((s) => s.isSquare);
+  const openTabs = useModelStore((s) => s.openTabs);
+  const activeTabId = useModelStore((s) => s.activeTabId);
+  const switchTab = useModelStore((s) => s.switchTab);
+  const closeTab = useModelStore((s) => s.closeTab);
+  const closeOtherTabs = useModelStore((s) => s.closeOtherTabs);
+  const renameTab = useModelStore((s) => s.renameTab);
+  const reorderTabs = useModelStore((s) => s.reorderTabs);
+  const newTab = useModelStore((s) => s.newTab);
+
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+
+  const checkScroll = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 2);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  }, []);
+
+  useEffect(() => {
+    checkScroll();
+    const el = tabsRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(checkScroll);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [openTabs, checkScroll]);
+
+  const stepScroll = (dir: -1 | 1) => {
+    tabsRef.current?.scrollBy({ left: dir * 140, behavior: 'smooth' });
+  };
+
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof Monaco | null>(null);
   const parseTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const activeEditorBg = getActiveEditorBg(editorTheme, theme, forceAppBg, palette);
+  const activeMonacoTheme = resolveEditorTheme(editorTheme, theme, forceAppBg, palette);
+
+  // Apply resolved Monaco theme whenever palette, theme, editorTheme, or forceAppBg changes
+  useEffect(() => {
+    const monaco = monacoRef.current || (window as unknown as { monaco?: typeof Monaco }).monaco;
+    if (monaco) {
+      defineEditorThemes(monaco);
+      monaco.editor.setTheme(activeMonacoTheme);
+    }
+  }, [activeMonacoTheme]);
+
+  // Dismiss context menu on click outside or Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onDown = () => setContextMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setContextMenu(null); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
+
+  // Controlled pinch-to-zoom / Ctrl+Wheel scaling across standard font sizes
+  useEffect(() => {
+    const el = editorBodyRef.current;
+    if (!el) return;
+
+    let accumulatedDelta = 0;
+    let resetTimer: ReturnType<typeof setTimeout> | null = null;
+    const THRESHOLD = 55; // Calibrated deliberate pinch threshold to avoid hyper-sensitivity
+
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      accumulatedDelta += e.deltaY;
+
+      if (resetTimer) clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        accumulatedDelta = 0;
+      }, 250);
+
+      if (accumulatedDelta <= -THRESHOLD) {
+        stepEditorFontSize(1);
+        accumulatedDelta = 0;
+      } else if (accumulatedDelta >= THRESHOLD) {
+        stepEditorFontSize(-1);
+        accumulatedDelta = 0;
+      }
+    };
+
+    el.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel, { capture: true });
+      if (resetTimer) clearTimeout(resetTimer);
+    };
+  }, [stepEditorFontSize]);
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
     setEditorInstance(editor);
+    editor.onDidChangeCursorPosition((e) => setCursor({ line: e.position.lineNumber, col: e.position.column }));
+    editor.onDidChangeCursorSelection((e) => {
+      const m = editor.getModel();
+      setSelLen(m ? m.getValueInRange(e.selection).length : 0);
+    });
 
     if (!languageRegistered) {
       registerEESLanguage(monaco);
       languageRegistered = true;
     }
 
-    // Set model language
+    // Set model language & enforce active theme on mount
     const model = editor.getModel();
     if (model) {
       monaco.editor.setModelLanguage(model, EES_LANGUAGE_ID);
     }
+    defineEditorThemes(monaco);
+    monaco.editor.setTheme(resolveEditorTheme(editorTheme, theme, forceAppBg, palette));
 
     // Register comment toggle actions
     editor.addAction({
-      id: 'ees.toggleBraceComment',
+      id: 'coolsolve.toggleBraceComment',
       label: 'Toggle { } Comment',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash],
       run: () => toggleBraceComment(editor),
     });
     editor.addAction({
-      id: 'ees.toggleQuoteComment',
+      id: 'coolsolve.toggleQuoteComment',
       label: 'Toggle " " Comment',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Slash],
       run: () => toggleQuoteComment(editor),
+    });
+
+    // Zoom keybindings stepping across standard font sizes
+    editor.addAction({
+      id: 'coolsolve.zoomIn',
+      label: 'Zoom In (Increase Font Size)',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Equal, monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadAdd],
+      run: () => stepEditorFontSize(1),
+    });
+    editor.addAction({
+      id: 'coolsolve.zoomOut',
+      label: 'Zoom Out (Decrease Font Size)',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Minus, monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadSubtract],
+      run: () => stepEditorFontSize(-1),
+    });
+    editor.addAction({
+      id: 'coolsolve.zoomReset',
+      label: 'Reset Zoom (Default Font Size)',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Digit0, monaco.KeyMod.CtrlCmd | monaco.KeyCode.Numpad0],
+      run: () => setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE),
     });
 
     // Focus editor
@@ -76,7 +228,7 @@ export default function CodeEditor() {
 
           // Set Monaco markers for errors and diagnostics
           if (editorRef.current) {
-            const monaco = window.monaco;
+            const monaco = monacoRef.current || window.monaco;
             if (monaco) {
               const model = editorRef.current.getModel();
               if (model) {
@@ -104,7 +256,7 @@ export default function CodeEditor() {
                     });
                   }
                 }
-                monaco.editor.setModelMarkers(model, 'ees', markers);
+                monaco.editor.setModelMarkers(model, 'coolsolve', useUIStore.getState().showUnderlines ? markers : []);
               }
             }
           }
@@ -115,6 +267,19 @@ export default function CodeEditor() {
     },
     [setParseResult]
   );
+
+  // Clear or re-apply markers when showUnderlines changes
+  useEffect(() => {
+    const monaco = monacoRef.current || window.monaco;
+    if (editorRef.current && monaco) {
+      const model = editorRef.current.getModel();
+      if (model && !showUnderlines) {
+        monaco.editor.setModelMarkers(model, 'coolsolve', []);
+      } else if (eescode) {
+        doParse(eescode);
+      }
+    }
+  }, [showUnderlines, eescode, doParse]);
 
   // Monaco onChange handler — user typing
   const handleChange = useCallback(
@@ -135,27 +300,229 @@ export default function CodeEditor() {
     }
   }, [eescode, doParse]);
 
+  const commitRename = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (trimmed) {
+      renameTab(id, trimmed);
+    }
+    setEditingTabId(null);
+  };
+
   return (
-    <div className="editor-pane">
-      <Editor
-        height="100%"
-        defaultLanguage={EES_LANGUAGE_ID}
-        value={eescode}
-        onChange={handleChange}
-        onMount={handleMount}
-        theme={theme === 'dark' ? 'vs-dark' : 'vs'}
-        options={{
-          fontSize: 13,
-          minimap: { enabled: true },
-          lineNumbers: 'on',
-          wordWrap: 'on',
-          automaticLayout: true,
-          scrollBeyondLastLine: false,
-          renderWhitespace: 'selection',
-          bracketPairColorization: { enabled: true },
-          tabSize: 4,
-        }}
-      />
+    <div
+      className="editor-pane"
+      style={{ '--active-editor-bg': activeEditorBg } as React.CSSProperties}
+    >
+      <div className="editor-tabs-bar">
+        <div className="editor-tabs" ref={tabsRef} onScroll={checkScroll}>
+          {openTabs.map((tab, index) => {
+            const isActive = tab.id === activeTabId;
+            const isEditing = tab.id === editingTabId;
+            const isDragging = draggedIndex === index;
+            const isDragOver = dragOverIndex === index && draggedIndex !== index;
+            return (
+              <div
+                key={tab.id}
+                className={`editor-tab ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''}`}
+                onClick={() => switchTab(tab.id)}
+                draggable={!isEditing}
+                onDragStart={(e) => {
+                  setDraggedIndex(index);
+                  e.dataTransfer.setData('text/plain', String(index));
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverIndex !== index) setDragOverIndex(index);
+                }}
+                onDragEnd={() => {
+                  setDraggedIndex(null);
+                  setDragOverIndex(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const from = Number(e.dataTransfer.getData('text/plain'));
+                  if (!isNaN(from) && from !== index) {
+                    reorderTabs(from, index);
+                  }
+                  setDraggedIndex(null);
+                  setDragOverIndex(null);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
+                }}
+                title={tab.filePath || `${tab.name} (Drag to reorder · Right-click to rename)`}
+              >
+                <FileCode size={13} className="tab-icon" />
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    className="tab-rename-input"
+                    value={editingName}
+                    onChange={(e) => setEditingName(e.target.value)}
+                    onBlur={() => commitRename(tab.id, editingName)}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(tab.id, editingName);
+                      else if (e.key === 'Escape') setEditingTabId(null);
+                    }}
+                  />
+                ) : (
+                  <span className="editor-tab-name">{tab.name}</span>
+                )}
+                {tab.dirty ? <span className="editor-tab-dirty" title="Unsaved changes" /> : null}
+                <button
+                  className="tab-close-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                  title="Close Tab"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+          <button
+            className="editor-tab-add-btn"
+            onClick={newTab}
+            title="New File"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        {(canScrollLeft || canScrollRight) && (
+          <div className="editor-tab-scroll-controls">
+            <button
+              className="editor-tab-scroll-btn"
+              disabled={!canScrollLeft}
+              onClick={() => stepScroll(-1)}
+              title="Scroll tabs left"
+              aria-label="Scroll tabs left"
+            >
+              <ChevronLeft size={13} />
+            </button>
+            <button
+              className="editor-tab-scroll-btn"
+              disabled={!canScrollRight}
+              onClick={() => stepScroll(1)}
+              title="Scroll tabs right"
+              aria-label="Scroll tabs right"
+            >
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Right-click Tab Context Menu */}
+      {contextMenu && (
+        <div
+          className="tab-context-menu"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              const t = openTabs.find((tab) => tab.id === contextMenu.tabId);
+              if (t) {
+                setEditingTabId(t.id);
+                setEditingName(t.name.replace(/\.eescode$/, ''));
+              }
+              setContextMenu(null);
+            }}
+          >
+            Rename
+          </button>
+          <button
+            onClick={() => {
+              closeTab(contextMenu.tabId);
+              setContextMenu(null);
+            }}
+          >
+            Close
+          </button>
+          <button
+            onClick={() => {
+              closeOtherTabs(contextMenu.tabId);
+              setContextMenu(null);
+            }}
+          >
+            Close Others
+          </button>
+        </div>
+      )}
+      <div className="editor-body" ref={editorBodyRef}>
+        <Editor
+          height="100%"
+          defaultLanguage={EES_LANGUAGE_ID}
+          value={eescode}
+          onChange={handleChange}
+          beforeMount={defineEditorThemes}
+          onMount={handleMount}
+          theme={activeMonacoTheme}
+          loading={<div className="editor-loading">Loading editor…</div>}
+          options={{
+            fontSize: editorFontSize,
+            fontFamily: fontCss(editorFont),
+            fontLigatures: true,
+            lineHeight: Math.round(editorFontSize * 1.55),
+            padding: { top: 8, bottom: 8 },
+            minimap: {
+              enabled: minimap,
+              renderCharacters: false,
+              showMarkSectionHeaders: false,
+              showRegionSectionHeaders: false,
+              maxColumn: 80,
+              showSlider: 'mouseover',
+            },
+            wordWrap: wordWrap ? 'on' : 'off',
+            automaticLayout: true,
+            scrollBeyondLastLine: false,
+            renderWhitespace: 'selection',
+            renderLineHighlight: 'line',
+            bracketPairColorization: { enabled: true },
+            guides: { bracketPairs: true, indentation: true },
+            smoothScrolling: true,
+            cursorBlinking: 'smooth',
+            cursorSmoothCaretAnimation: 'on',
+            roundedSelection: true,
+            folding: true,
+            showFoldingControls: 'mouseover',
+            stickyScroll: { enabled: stickyScroll },
+            renderValidationDecorations: showUnderlines ? 'editable' : 'off',
+            links: false,
+            matchBrackets: 'near',
+            occurrencesHighlight: 'off',
+            linkedEditing: true,
+            mouseWheelZoom: false,
+            multiCursorModifier: 'ctrlCmd',
+            formatOnPaste: true,
+            suggest: { preview: true },
+            quickSuggestions: { other: true, comments: false, strings: false },
+            lineNumbersMinChars: 4,
+            glyphMargin: false,
+            overviewRulerBorder: false,
+            hideCursorInOverviewRuler: true,
+            scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12, useShadows: false },
+            tabSize: 4,
+          }}
+        />
+      </div>
+      <div className="editor-status">
+        <span className={parseErrors.length ? 'status-err' : 'status-ok'}>
+          {parseErrors.length ? `✖ ${parseErrors.length} error${parseErrors.length > 1 ? 's' : ''}` : '✔ No problems'}
+        </span>
+        <span>{equationCount} eq · {variableCount} var{!isSquare && equationCount > 0 ? ' · not square' : ''}</span>
+        <span className="status-spacer" />
+        <span>Ln {cursor.line}, Col {cursor.col}{selLen ? ` (${selLen} selected)` : ''}</span>
+        <span>Spaces: 4</span>
+        <span>CoolSolve</span>
+      </div>
     </div>
   );
 }

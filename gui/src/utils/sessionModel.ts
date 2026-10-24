@@ -16,7 +16,7 @@ import { useModelStore } from '../stores/modelStore';
  * result and integral trajectory.
  */
 export async function showSessionModel(): Promise<void> {
-  const [ees, init, sol, conf, tables] = await Promise.all([
+  const [codeFile, init, sol, conf, tables] = await Promise.all([
     api.getEescode(),
     api.getInitials(),
     api.getSol(),
@@ -24,7 +24,7 @@ export async function showSessionModel(): Promise<void> {
     api.getTables(),
   ]);
   const store = useModelStore.getState();
-  store.loadFile(ees.filePath, ees.content, init.content, sol.content, conf.content, ees.modelName, ees.libraryId);
+  store.loadFile(codeFile.filePath, codeFile.content, init.content, sol.content, conf.content, codeFile.modelName, codeFile.libraryId);
   store.setLookupTables(tables.tables);
 
   const [result, integral, integralCSV] = await Promise.all([

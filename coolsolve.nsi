@@ -3,10 +3,10 @@
 !define VERSION "0.4"
 !define COOLPROP_VERSION "8.1.0dev (75af7816)"
 
-Name "CoolSolve ${VERSION}"
-OutFile "CoolSolve_v${VERSION}_Installer.exe"
-InstallDir "$PROGRAMFILES64\CoolSolve"
-InstallDirRegKey HKCU "Software\CoolSolve" ""
+Name "CoolSolve-Canary ${VERSION}"
+OutFile "CoolSolve-Canary_v${VERSION}_Installer.exe"
+InstallDir "$PROGRAMFILES64\CoolSolve-Canary"
+InstallDirRegKey HKCU "Software\CoolSolve-Canary" ""
 
 RequestExecutionLevel admin
 
@@ -28,6 +28,10 @@ RequestExecutionLevel admin
 !insertmacro MUI_LANGUAGE "English"
 
 Section "CoolSolve" Section_Main
+    ; Close any running instance of CoolSolve so the executable is not locked
+    ExecWait 'taskkill /F /IM coolsolve.exe'
+    Sleep 500
+
     SetOutPath "$INSTDIR"
     File "build\Release\coolsolve.exe"
     ; If we had external DLLs, they would go here
@@ -38,20 +42,19 @@ Section "CoolSolve" Section_Main
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     
     ; Add to Start Menu
-    CreateShortcut "$SMPROGRAMS\CoolSolve.lnk" "$INSTDIR\coolsolve.exe" "" "$INSTDIR\coolsolve.exe" 0
+    CreateShortcut "$SMPROGRAMS\CoolSolve-Canary.lnk" "$INSTDIR\coolsolve.exe" "" "$INSTDIR\coolsolve.exe" 0
     
-    ; File Association for .eescode files
-    WriteRegStr HKCR ".eescode" "" "CoolSolve.EESCode"
-    WriteRegStr HKCR "CoolSolve.EESCode" "" "CoolSolve Equation Set"
-    WriteRegStr HKCR "CoolSolve.EESCode\DefaultIcon" "" "$INSTDIR\coolsolve.exe,0"
-    WriteRegStr HKCR "CoolSolve.EESCode\shell\open\command" "" '"$INSTDIR\coolsolve.exe" --gui "%1"'
+    ; File Association for .eescode files (isolated ProgID so original CoolSolve.EESCode is untouched)
+    WriteRegStr HKCR "CoolSolveCanary.EESCode" "" "CoolSolve-Canary Equation Set"
+    WriteRegStr HKCR "CoolSolveCanary.EESCode\DefaultIcon" "" "$INSTDIR\coolsolve.exe,0"
+    WriteRegStr HKCR "CoolSolveCanary.EESCode\shell\open\command" "" '"$INSTDIR\coolsolve.exe" --gui "%1"'
     
     ; Add to Add/Remove Programs
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayName" "CoolSolve ${VERSION}"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayVersion" "${VERSION}"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayIcon" "$INSTDIR\coolsolve.exe"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "Publisher" "CoolSolve"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary" "DisplayName" "CoolSolve-Canary ${VERSION}"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary" "DisplayVersion" "${VERSION}"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary" "DisplayIcon" "$INSTDIR\coolsolve.exe"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary" "Publisher" "CoolSolve-Canary"
 SectionEnd
 
 Section "Uninstall"
@@ -60,9 +63,8 @@ Section "Uninstall"
     RMDir /r "$INSTDIR\examples"
     RMDir "$INSTDIR"
     
-    Delete "$SMPROGRAMS\CoolSolve.lnk"
+    Delete "$SMPROGRAMS\CoolSolve-Canary.lnk"
     
-    DeleteRegKey HKCR ".eescode"
-    DeleteRegKey HKCR "CoolSolve.EESCode"
-    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve"
+    DeleteRegKey HKCR "CoolSolveCanary.EESCode"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve-Canary"
 SectionEnd

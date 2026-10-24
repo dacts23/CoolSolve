@@ -712,21 +712,66 @@ static json integralResultToJSON(const CoolSolveRunner& runner, const std::strin
 }
 
 // ============================================================================
-// Open browser helper (cross-platform)
+// Open standalone chromeless desktop window (cross-platform --app mode)
 // ============================================================================
-static void openBrowser(const std::string& url) {
-#if defined(__linux__)
-    std::string cmd = "xdg-open \"" + url + "\" 2>/dev/null &";
-#elif defined(__APPLE__)
-    std::string cmd = "open \"" + url + "\"";
-#elif defined(_WIN32)
-    std::string cmd = "start \"\" \"" + url + "\"";
-#else
-    std::string cmd = "";
-#endif
-    if (!cmd.empty()) {
-        (void)std::system(cmd.c_str());
+static void openDesktopWindow(const std::string& url, int port, httplib::Server& svr) {
+    auto profileDir = fs::temp_directory_path() / ("coolsolve_app_" + std::to_string(port));
+    std::error_code ec;
+    fs::create_directories(profileDir, ec);
+
+#if defined(_WIN32)
+    const char* envCandidates[] = { "ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA" };
+    const char* relPaths[] = {
+        "\\Microsoft\\Edge\\Application\\msedge.exe",
+        "\\Google\\Chrome\\Application\\chrome.exe",
+        "\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+    };
+    std::string exePath;
+    for (const char* rel : relPaths) {
+        for (const char* envName : envCandidates) {
+            const char* base = std::getenv(envName);
+            if (base && *base) {
+                std::string p = std::string(base) + rel;
+                if (fs::exists(p, ec)) { exePath = p; break; }
+            }
+        }
+        if (!exePath.empty()) break;
     }
+    if (!exePath.empty()) {
+        std::string cmdLine = "\"" + exePath + "\" --app=\"" + url + "\""
+            + " --user-data-dir=\"" + profileDir.string() + "\""
+            + " --window-size=1400,880 --no-first-run --no-default-browser-check"
+            + " --disable-features=Translate,msEdgeSidebarV2";
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        auto t0 = std::chrono::steady_clock::now();
+        if (CreateProcessA(exePath.c_str(), cmdLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            // shortcut: only stop server if app process owned the window (>1.5s lifetime), upgrade to WebView2 host if single-process embedding is needed
+            if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(1500)) {
+                svr.stop();
+            }
+            return;
+        }
+    }
+    std::string fallback = "start \"\" \"" + url + "\"";
+    (void)std::system(fallback.c_str());
+#elif defined(__APPLE__)
+    std::string cmd = "(\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\" --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || \"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge\" --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || open \"" + url + "\") &";
+    (void)std::system(cmd.c_str());
+#elif defined(__linux__)
+    std::string cmd = "(google-chrome --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || chromium --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || chromium-browser --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || microsoft-edge --app=\"" + url + "\" --user-data-dir=\"" + profileDir.string() + "\" --window-size=1400,880 --no-first-run 2>/dev/null"
+                      " || xdg-open \"" + url + "\" 2>/dev/null) &";
+    (void)std::system(cmd.c_str());
+#endif
 }
 
 // ============================================================================
@@ -3535,12 +3580,18 @@ int startServer(const ServerOptions& options) {
     });
     warmupThread.detach();
     
-    // Open browser
+    // Open standalone desktop window (not a browser tab)
     if (options.openBrowser) {
-        // Small delay to let server start
-        std::thread([url]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            openBrowser(url);
+#if defined(_WIN32)
+        // Hide the console window if launched standalone (Start Menu / Explorer double-click)
+        DWORD consolePids[2] = {};
+        if (GetConsoleProcessList(consolePids, 2) <= 1) {
+            if (HWND hwnd = GetConsoleWindow()) ShowWindow(hwnd, SW_HIDE);
+        }
+#endif
+        std::thread([url, port, &svr]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            openDesktopWindow(url, port, svr);
         }).detach();
     }
     

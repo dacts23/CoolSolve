@@ -216,11 +216,21 @@ export default function LookupTableEditor() {
   const setLookupTableCSV = useModelStore((s) => s.setLookupTableCSV);
   const removeLookupTable = useModelStore((s) => s.removeLookupTable);
 
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const selectedTable = useModelStore((s) => s.selectedLookupTable);
+  const setSelectedTable = useModelStore((s) => s.setSelectedLookupTable);
   const [newTableName, setNewTableName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const newTableRef = useRef<HTMLInputElement>(null);
+
+  // Auto-fetch CSV if selectedTable is set from sidebar
+  React.useEffect(() => {
+    if (selectedTable && !lookupTableCSVs[selectedTable]) {
+      api.getTableCSV(selectedTable)
+        .then((csv) => setLookupTableCSV(selectedTable, csv))
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    }
+  }, [selectedTable, lookupTableCSVs, setLookupTableCSV]);
 
   // Refresh table list from server
   const refreshTables = useCallback(async () => {
