@@ -738,10 +738,19 @@ static void openDesktopWindow(const std::string& url, int port, httplib::Server&
         if (!exePath.empty()) break;
     }
     if (!exePath.empty()) {
+        auto defDir = profileDir / "Default";
+        fs::create_directories(defDir, ec);
+        auto prefFile = defDir / "Preferences";
+        if (!fs::exists(prefFile, ec)) {
+            std::ofstream out(prefFile);
+            if (out.is_open()) {
+                out << "{\"edge_quick_search\":{\"show_mini_menu\":false,\"enable_quick_search\":false,\"PDF_show_mini_menu\":false,\"customized_disabled_sites\":[\"localhost\",\"127.0.0.1\"]}}";
+            }
+        }
         std::string cmdLine = "\"" + exePath + "\" --app=\"" + url + "\""
             + " --user-data-dir=\"" + profileDir.string() + "\""
             + " --window-size=1400,880 --no-first-run --no-default-browser-check"
-            + " --disable-features=Translate,msEdgeSidebarV2";
+            + " --disable-features=Translate,msEdgeSidebarV2,msWebOOUI,msPdfOOUI,QuickSearch,msEdgeQuickSearch";
         STARTUPINFOA si{};
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi{};

@@ -1,6 +1,10 @@
 import React, { useState, useCallback, useRef } from 'react';
+import ConfirmModal from './ConfirmModal';
+import SyntaxFooter from './SyntaxFooter';
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
+import { downloadCsv } from '../utils/csv';
+import { Plus, Minus, Upload, Download, Save, Trash2 } from 'lucide-react';
 
 // ============================================================================
 // Helpers
@@ -48,11 +52,10 @@ function serializeCSV(rows: string[][]): string {
 
 interface TableGridProps {
   tableName: string;
-  onClose: () => void;
-  onSaved: () => void;
+  onSaved?: () => void;
 }
 
-function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
+function TableGrid({ tableName, onSaved }: TableGridProps) {
   const lookupTableCSVs = useModelStore((s) => s.lookupTableCSVs);
   const setLookupTableCSV = useModelStore((s) => s.setLookupTableCSV);
 
@@ -80,14 +83,52 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
   const addColumn = () =>
     setRows((prev) => prev.map((row, i) => [...row, i === 0 ? `Column${row.length + 1}` : '']));
 
-  const deleteRow = (r: number) => {
-    if (r === 0 || rows.length <= 2) return; // keep header + 1 data row
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  const focusCell = useCallback((r: number, c: number, selectAll = true) => {
+    const el = gridContainerRef.current?.querySelector<HTMLInputElement>(
+      `input[data-row="${r}"][data-col="${c}"]`
+    );
+    if (el) {
+      el.focus();
+      if (selectAll) {
+        el.select();
+      }
+    }
+  }, []);
+
+  const [lastFocusedCell, setLastFocusedCell] = useState<{ r: number; c: number } | null>(null);
+
+  const deleteRow = useCallback((r: number) => {
+    if (r === 0 || rows.length <= 2) return; // keep header + at least 1 data row
     setRows((prev) => prev.filter((_, i) => i !== r));
+    const nextRow = Math.min(r, rows.length - 2);
+    const col = lastFocusedCell?.c ?? 0;
+    setTimeout(() => focusCell(nextRow, col), 0);
+  }, [rows.length, lastFocusedCell, focusCell]);
+
+  const deleteColumn = useCallback((c: number) => {
+    if (rows[0]?.length <= 1) return; // keep at least 1 column
+    setRows((prev) => prev.map((row) => row.filter((_, i) => i !== c)));
+    const nextCol = Math.min(c, (rows[0]?.length ?? 2) - 2);
+    const row = lastFocusedCell?.r ?? 0;
+    setTimeout(() => focusCell(row, nextCol), 0);
+  }, [rows, lastFocusedCell, focusCell]);
+
+  const handleRemoveRow = () => {
+    if (rows.length <= 2) return;
+    const targetRow = (lastFocusedCell && lastFocusedCell.r > 0 && lastFocusedCell.r < rows.length)
+      ? lastFocusedCell.r
+      : rows.length - 1;
+    deleteRow(targetRow);
   };
 
-  const deleteColumn = (c: number) => {
-    if (rows[0]?.length <= 1) return;
-    setRows((prev) => prev.map((row) => row.filter((_, i) => i !== c)));
+  const handleRemoveColumn = () => {
+    if (numCols <= 1) return;
+    const targetCol = (lastFocusedCell && lastFocusedCell.c >= 0 && lastFocusedCell.c < numCols)
+      ? lastFocusedCell.c
+      : numCols - 1;
+    deleteColumn(targetCol);
   };
 
   const handleSave = async () => {
@@ -97,11 +138,99 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
       const csv = serializeCSV(rows);
       await api.putTable(tableName, csv);
       setLookupTableCSV(tableName, csv);
-      onSaved();
+      onSaved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, r: number, c: number) => {
+    const input = e.currentTarget;
+    const numRows = rows.length;
+
+    if (e.key === 'Backspace' && input.value === '' && r > 1 && r === numRows - 1) {
+      const currentRow = rows[r];
+      const isRowEmpty = currentRow.every((cell) => !cell || cell.trim() === '');
+      if (isRowEmpty && numRows > 2) {
+        e.preventDefault();
+        deleteRow(r);
+        return;
+      }
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (r > 0) focusCell(r - 1, c);
+      } else {
+        if (r < numRows - 1) {
+          focusCell(r + 1, c);
+        } else {
+          // On last row, press Enter to append a new row and focus it (like Excel)
+          setRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
+          setTimeout(() => focusCell(numRows, c), 0);
+        }
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      if (r < numRows - 1) {
+        e.preventDefault();
+        focusCell(r + 1, c);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowUp') {
+      if (r > 0) {
+        e.preventDefault();
+        focusCell(r - 1, c);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowRight') {
+      const isAtEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+      const isAllSelected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
+      if ((isAtEnd || isAllSelected) && c < numCols - 1) {
+        e.preventDefault();
+        focusCell(r, c + 1);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowLeft') {
+      const isAtStart = input.selectionStart === 0 && input.selectionEnd === 0;
+      const isAllSelected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
+      if ((isAtStart || isAllSelected) && c > 0) {
+        e.preventDefault();
+        focusCell(r, c - 1);
+      }
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (c > 0) {
+          focusCell(r, c - 1);
+        } else if (r > 0) {
+          focusCell(r - 1, numCols - 1);
+        }
+      } else {
+        if (c < numCols - 1) {
+          focusCell(r, c + 1);
+        } else if (r < numRows - 1) {
+          focusCell(r + 1, 0);
+        } else {
+          setRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
+          setTimeout(() => focusCell(numRows, 0), 0);
+        }
+      }
+      return;
     }
   };
 
@@ -118,58 +247,100 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
     e.target.value = '';
   };
 
-  const handleExportCSV = () => {
+  const handleExportCSV = async () => {
     const csv = serializeCSV(rows);
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${tableName}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await downloadCsv(`${tableName}.csv`, csv);
   };
 
   const numCols = rows[0]?.length ?? 0;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 6 }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, padding: '4px 0' }}>
-        <span style={{ fontWeight: 600, fontSize: 13 }}>{tableName}</span>
-        <button className="toolbar-btn" onClick={addRow} title="Add row">+ Row</button>
-        <button className="toolbar-btn" onClick={addColumn} title="Add column">+ Col</button>
-        <label className="toolbar-btn" style={{ cursor: 'pointer' }} title="Import CSV">
-          Import CSV
-          <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImportCSV} />
-        </label>
-        <button className="toolbar-btn" onClick={handleExportCSV} title="Export CSV">Export CSV</button>
+    <div className="table-editor-container">
+      {/* Controls to a top bar, like other panels */}
+      <div className="table-editor-toolbar">
+        {/* Row controls: label left of button group, buttons are just + and - */}
+        <div className="table-control-unit">
+          <span className="table-unit-label">Rows</span>
+          <div className="table-btn-group">
+            <button className="table-btn-pill icon-only" onClick={addRow} title="Add row at bottom">
+              <Plus size={11} />
+            </button>
+            <button className="table-btn-pill icon-only" onClick={handleRemoveRow} disabled={rows.length <= 2} title="Remove bottom row">
+              <Minus size={11} />
+            </button>
+          </div>
+        </div>
+
+        {/* Column controls: label left of button group, buttons are just + and - */}
+        <div className="table-control-unit">
+          <span className="table-unit-label">Cols</span>
+          <div className="table-btn-group">
+            <button className="table-btn-pill icon-only" onClick={addColumn} title="Add column at right">
+              <Plus size={11} />
+            </button>
+            <button className="table-btn-pill icon-only" onClick={handleRemoveColumn} disabled={numCols <= 1} title="Remove rightmost column">
+              <Minus size={11} />
+            </button>
+          </div>
+        </div>
+
+        <div className="table-toolbar-divider" />
+
+        {/* File Transfer */}
+        <div className="table-btn-group">
+          <label className="table-btn-pill" style={{ cursor: 'pointer' }} title="Import CSV file">
+            <Upload size={11} /> Import CSV
+            <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImportCSV} />
+          </label>
+          <button className="table-btn-pill" onClick={handleExportCSV} title="Export table to CSV">
+            <Download size={11} /> Export CSV
+          </button>
+        </div>
+
         <div style={{ flex: 1 }} />
-        {error && <span style={{ color: '#f87171', fontSize: 12 }}>{error}</span>}
-        <button className="toolbar-btn" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
+
+        {error && (
+          <span style={{ color: 'var(--error-color)', fontSize: 11, marginRight: 8, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={error}>
+            {error}
+          </span>
+        )}
+
+        <button className="table-save-btn" onClick={handleSave} disabled={saving} title="Save changes">
+          <Save size={12} /> {saving ? 'Saving…' : 'Save'}
         </button>
-        <button className="toolbar-btn" onClick={onClose}>✕</button>
+      </div>
+
+      {/* Title above table, not in any panel */}
+      <div className="table-inline-header">
+        <h2 className="table-inline-title">{tableName}</h2>
+        <span className="table-meta-badge">{rows.length - 1} rows · {numCols} cols</span>
       </div>
 
       {/* Grid */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed', minWidth: '100%' }}>
+      <div ref={gridContainerRef} style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed', minWidth: '100%', borderSpacing: 0 }}>
           <thead>
             <tr>
-              <th style={{ width: 28 }} />
+              <th style={{ width: 44, textAlign: 'center', color: 'var(--text-muted)', fontSize: 10, border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', userSelect: 'none' }}>#</th>
               {Array.from({ length: numCols }).map((_, c) => (
-                <th key={c} style={{ border: '1px solid #3a3a3a', padding: '2px 4px', background: '#1e1e2e' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <th key={c} style={{ border: '1px solid var(--border-color)', padding: '3px 6px', background: 'var(--bg-secondary)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <input
+                      data-row={0}
+                      data-col={c}
+                      className="table-grid-cell"
                       value={rows[0]?.[c] ?? ''}
                       onChange={(e) => setCell(0, c, e.target.value)}
-                      style={{ flex: 1, background: 'transparent', border: 'none', color: '#cdd6f4', fontWeight: 600, fontSize: 12, outline: 'none' }}
+                      onFocus={() => setLastFocusedCell({ r: 0, c })}
+                      onKeyDown={(e) => handleKeyDown(e, 0, c)}
+                      style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontWeight: 600, fontSize: 12, outline: 'none', padding: '3px 4px', borderRadius: 3 }}
                     />
                     {numCols > 1 && (
                       <button
+                        className="grid-del-btn"
                         onClick={() => deleteColumn(c)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#585b70', fontSize: 11, padding: 0, lineHeight: 1 }}
-                        title="Delete column"
+                        tabIndex={-1}
+                        title={`Delete column ${rows[0]?.[c] || c + 1}`}
                       >×</button>
                     )}
                   </div>
@@ -180,19 +351,30 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
           <tbody>
             {rows.slice(1).map((row, ri) => (
               <tr key={ri + 1}>
-                <td style={{ textAlign: 'center', color: '#6c7086', fontSize: 11, border: '1px solid #2a2a3a' }}>
-                  <button
-                    onClick={() => deleteRow(ri + 1)}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#585b70', fontSize: 12 }}
-                    title="Delete row"
-                  >×</button>
+                <td style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 11, border: '1px solid var(--border-color)', width: 44, background: 'var(--bg-secondary)', userSelect: 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px' }}>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 14 }}>{ri + 1}</span>
+                    {rows.length > 2 && (
+                      <button
+                        className="grid-del-btn"
+                        onClick={() => deleteRow(ri + 1)}
+                        tabIndex={-1}
+                        title={`Delete row ${ri + 1}`}
+                      >×</button>
+                    )}
+                  </div>
                 </td>
                 {Array.from({ length: numCols }).map((_, c) => (
-                  <td key={c} style={{ border: '1px solid #2a2a3a', padding: 0 }}>
+                  <td key={c} style={{ border: '1px solid var(--border-color)', padding: 0 }}>
                     <input
+                      data-row={ri + 1}
+                      data-col={c}
+                      className="table-grid-cell"
                       value={row[c] ?? ''}
                       onChange={(e) => setCell(ri + 1, c, e.target.value)}
-                      style={{ width: '100%', background: 'transparent', border: 'none', color: '#cdd6f4', fontSize: 12, padding: '2px 4px', outline: 'none', boxSizing: 'border-box' }}
+                      onFocus={() => setLastFocusedCell({ r: ri + 1, c })}
+                      onKeyDown={(e) => handleKeyDown(e, ri + 1, c)}
+                      style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: 12, padding: '3px 6px', outline: 'none', boxSizing: 'border-box', borderRadius: 2 }}
                     />
                   </td>
                 ))}
@@ -201,6 +383,14 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
           </tbody>
         </table>
       </div>
+
+      <SyntaxFooter
+        items={[
+          { code: `LOOKUP('${tableName}', row, col)` },
+          { code: `INTERPOLATE('${tableName}', '${rows[0]?.[0] || 'xcol'}', '${rows[0]?.[1] || 'ycol'}', xval)` },
+        ]}
+        fileHint={`<model>-${tableName}.csv`}
+      />
     </div>
   );
 }
@@ -210,6 +400,7 @@ function TableGrid({ tableName, onClose, onSaved }: TableGridProps) {
 // ============================================================================
 
 export default function LookupTableEditor() {
+  const [tableToDelete, setTableToDelete] = useState<string | null>(null);
   const lookupTables = useModelStore((s) => s.lookupTables);
   const lookupTableCSVs = useModelStore((s) => s.lookupTableCSVs);
   const setLookupTables = useModelStore((s) => s.setLookupTables);
@@ -218,10 +409,7 @@ export default function LookupTableEditor() {
 
   const selectedTable = useModelStore((s) => s.selectedLookupTable);
   const setSelectedTable = useModelStore((s) => s.setSelectedLookupTable);
-  const [newTableName, setNewTableName] = useState('');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const newTableRef = useRef<HTMLInputElement>(null);
 
   // Auto-fetch CSV if selectedTable is set from sidebar
   React.useEffect(() => {
@@ -256,28 +444,10 @@ export default function LookupTableEditor() {
     setSelectedTable(name);
   }, [lookupTableCSVs, setLookupTableCSV]);
 
-  const handleCreateTable = async () => {
-    const name = newTableName.trim();
-    if (!name) return;
-    const defaultCSV = 'Column1,Column2\n1,\n2,\n';
-    setLoading(true);
-    setError(null);
-    try {
-      await api.putTable(name, defaultCSV);
-      setLookupTableCSV(name, defaultCSV);
-      await refreshTables();
-      setNewTableName('');
-      setSelectedTable(name);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDeleteTable = async (name: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`Delete table "${name}"?`)) return;
+  const confirmDeleteTable = async () => {
+    if (!tableToDelete) return;
+    const name = tableToDelete;
+    setTableToDelete(null);
     try {
       await api.deleteTable(name);
       removeLookupTable(name);
@@ -290,55 +460,37 @@ export default function LookupTableEditor() {
   // If editing a table, show the grid
   if (selectedTable !== null) {
     return (
-      <div style={{ padding: 8, height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
-        <TableGrid
-          tableName={selectedTable}
-          onClose={() => setSelectedTable(null)}
-          onSaved={() => { refreshTables(); }}
-        />
-      </div>
+      <TableGrid
+        tableName={selectedTable}
+        onSaved={() => { refreshTables(); }}
+      />
     );
   }
 
   return (
-    <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8, height: '100%', boxSizing: 'border-box' }}>
-      <div style={{ fontSize: 12, color: '#a6adc8', flexShrink: 0 }}>
-        Lookup tables are CSV files loaded from the model's directory using the
-        naming convention <code style={{ color: '#cba6f7' }}>&lt;modelname&gt;-&lt;tablename&gt;.csv</code>.{' '}
-        <code style={{ color: '#cba6f7' }}>LOOKUP('table', row, col)</code> — direct cell access;{' '}
-        <code style={{ color: '#cba6f7' }}>INTERPOLATE('table', 'xcol', 'ycol', x)</code> — 1-D interpolation.
+    <div className="table-editor-container">
+      <div className="table-title-header">
+        <div className="table-title-display">
+          <h2 className="table-main-title">Lookup Tables</h2>
+          <span className="table-meta-badge">{lookupTables.length} tables</span>
+        </div>
       </div>
 
-      {/* Create new table */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-        <input
-          ref={newTableRef}
-          value={newTableName}
-          onChange={(e) => setNewTableName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleCreateTable()}
-          placeholder="New table name…"
-          style={{ flex: 1, padding: '3px 6px', background: '#1e1e2e', border: '1px solid #3a3a4a', borderRadius: 3, color: '#cdd6f4', fontSize: 12 }}
-        />
-        <button className="toolbar-btn" onClick={handleCreateTable} disabled={loading || !newTableName.trim()}>
-          Create
-        </button>
-      </div>
-
-      {error && <div style={{ color: '#f87171', fontSize: 12 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--error-color)', fontSize: 12, padding: '0 14px 8px 14px' }}>{error}</div>}
 
       {/* Table list */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 14px 14px' }}>
         {lookupTables.length === 0 ? (
-          <div style={{ color: '#585b70', fontSize: 12, paddingTop: 8 }}>
-            No lookup tables. Create one above or load a model with .csv files.
+          <div style={{ color: 'var(--text-muted)', fontSize: 12, paddingTop: 20, textAlign: 'center' }}>
+            No lookup tables yet. Create one using <strong>NEW TABLE</strong> in the sidebar.
           </div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
-              <tr style={{ color: '#a6adc8', textAlign: 'left', borderBottom: '1px solid #3a3a4a' }}>
-                <th style={{ padding: '3px 6px' }}>Name</th>
-                <th style={{ padding: '3px 6px' }}>Rows</th>
-                <th style={{ padding: '3px 6px' }}>Columns</th>
+              <tr style={{ color: 'var(--text-secondary)', textAlign: 'left', borderBottom: '1px solid var(--border-color)' }}>
+                <th style={{ padding: '6px 8px' }}>Name</th>
+                <th style={{ padding: '6px 8px' }}>Rows</th>
+                <th style={{ padding: '6px 8px' }}>Columns</th>
                 <th style={{ width: 40 }} />
               </tr>
             </thead>
@@ -347,18 +499,21 @@ export default function LookupTableEditor() {
                 <tr
                   key={tbl.name}
                   onClick={() => openTable(tbl.name)}
-                  style={{ cursor: 'pointer', borderBottom: '1px solid #2a2a3a' }}
+                  style={{ cursor: 'pointer', borderBottom: '1px solid var(--border-color)' }}
                   className="lookup-table-row"
                 >
-                  <td style={{ padding: '4px 6px', color: '#cba6f7' }}>{tbl.name}</td>
-                  <td style={{ padding: '4px 6px', color: '#cdd6f4' }}>{tbl.rows}</td>
-                  <td style={{ padding: '4px 6px', color: '#a6adc8' }}>{tbl.columns.join(', ')}</td>
-                  <td style={{ padding: '4px 6px' }}>
+                  <td style={{ padding: '6px 8px', color: 'var(--accent-color)', fontWeight: 500 }}>{tbl.name}</td>
+                  <td style={{ padding: '6px 8px', color: 'var(--text-primary)' }}>{tbl.rows}</td>
+                  <td style={{ padding: '6px 8px', color: 'var(--text-secondary)' }}>{tbl.columns.join(', ')}</td>
+                  <td style={{ padding: '6px 8px' }}>
                     <button
-                      onClick={(e) => handleDeleteTable(tbl.name, e)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#585b70', fontSize: 14 }}
+                      onClick={(e) => { e.stopPropagation(); setTableToDelete(tbl.name); }}
+                      className="icon-btn small"
+                      style={{ opacity: 0.7 }}
                       title="Delete table"
-                    >🗑</button>
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -366,6 +521,23 @@ export default function LookupTableEditor() {
           </table>
         )}
       </div>
+      <SyntaxFooter
+        items={[
+          { code: "LOOKUP('tablename', row, col)" },
+          { code: "INTERPOLATE('tablename', 'xcol', 'ycol', xval)" },
+        ]}
+        fileHint="<model>-<tablename>.csv"
+      />
+
+      {tableToDelete && (
+        <ConfirmModal
+          title="Delete Lookup Table"
+          message={`Are you sure you want to delete lookup table "${tableToDelete}"? This action cannot be undone.`}
+          confirmLabel="Delete Table"
+          onConfirm={confirmDeleteTable}
+          onCancel={() => setTableToDelete(null)}
+        />
+      )}
     </div>
   );
 }

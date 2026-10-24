@@ -72,7 +72,7 @@ export default function DebugViewer() {
 
   const blocksPane = (
     <div className={`debug-blocks-summary ${!blocksOpen ? 'collapsed' : ''}`}>
-      <div className="debug-file-list-header clickable" onClick={() => setBlocksOpen((o) => !o)}>
+      <div className="debug-file-list-header clickable" onClick={() => setBlocksOpen((o) => !o)} title={blocksOpen ? "Fold Tarjan Block Decomposition" : "Unfold Tarjan Block Decomposition"}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {blocksOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <span>Tarjan Block Decomposition ({blocks.length} blocks · {lastResult?.totalIterations ?? 0} total iters)</span>
@@ -109,7 +109,7 @@ export default function DebugViewer() {
 
   const filesListSection = (
     <div className={`debug-file-list-wrap ${!filesOpen ? 'collapsed' : ''}`}>
-      <div className="debug-file-list-header clickable" onClick={() => setFilesOpen((o) => !o)}>
+      <div className="debug-file-list-header clickable" onClick={() => setFilesOpen((o) => !o)} title={filesOpen ? "Fold Debug Trace Files" : "Unfold Debug Trace Files"}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {filesOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <span>Debug Trace Files ({files.length})</span>
@@ -183,12 +183,13 @@ export default function DebugViewer() {
   );
 
   const filesPane = files.length > 0 ? (
-    selected ? (
+    !filesOpen ? (
+      filesListSection
+    ) : selected ? (
       <SplitPane
         direction="vertical"
         defaultSize={35}
         minSize={30}
-        collapsed={!filesOpen ? 'first' : false}
         className="debug-trace-split"
       >
         {filesListSection}
@@ -215,7 +216,15 @@ export default function DebugViewer() {
           direction="vertical"
           defaultSize={selected ? 35 : 50}
           minSize={30}
-          collapsed={!blocksOpen ? 'first' : false}
+          collapsed={
+            !blocksOpen && !filesOpen
+              ? 'both'
+              : !blocksOpen
+                ? 'first'
+                : !filesOpen
+                  ? 'second'
+                  : false
+          }
           className="debug-main-split"
         >
           {blocksPane}

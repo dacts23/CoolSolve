@@ -1,4 +1,6 @@
 import Select from './Select';
+import { Download } from 'lucide-react';
+import SyntaxFooter from './SyntaxFooter';
 /**
  * IntegralTable.tsx — Bottom-panel tab for the equation-based dynamic
  * (INTEGRAL / $IntegralTable) trajectory.
@@ -21,6 +23,7 @@ import Select from './Select';
 import { useMemo, useState, useCallback, useEffect } from 'react';
 import Plot from './PlotlyChart';
 import { useModelStore } from '../stores/modelStore';
+import { downloadCsv } from '../utils/csv';
 import type { IntegralTableData } from '../api/types';
 
 // ============================================================================
@@ -156,30 +159,31 @@ export default function IntegralTable() {
   }, [table, plotYVar]);
 
   // ---- Export CSV ----
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async () => {
     if (!table) return;
     const csv = tableToCSV(table);
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = table.csvName || 'integral.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    await downloadCsv(table.csvName || 'integral.csv', csv);
   }, [table]);
 
   // ---- Empty state ----
   if (!table) {
     return (
-      <div className="integral-table-panel">
-        <div className="parametric-section-title">Integral Table</div>
-        <div className="parametric-notice">
-          No integral trajectory available. Write an equation-based integral model
-          (using the <code>INTEGRAL(integrand, t, t0, tf)</code> function and a{' '}
-          <code>$IntegralTable</code> directive) and solve it to populate this tab.
+      <div className="table-editor-container">
+        <div className="table-title-header">
+          <div className="table-title-display">
+            <h2 className="table-main-title">Integral Table</h2>
+          </div>
         </div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 20, textAlign: 'center' }}>
+          No integral trajectory available. Solve a model with an INTEGRAL function and $IntegralTable directive to view trajectory data.
+        </div>
+        <SyntaxFooter
+          items={[
+            { code: 'x = INTEGRAL(dx_dt, t, 0, 10)' },
+            { code: '$IntegralTable t:0.1, x, dx_dt' },
+          ]}
+          fileHint="<model>-integral.csv"
+        />
       </div>
     );
   }
@@ -192,78 +196,89 @@ export default function IntegralTable() {
   ].filter(Boolean).join(' · ');
 
   return (
-    <div className="integral-table-panel">
-      <div className="integral-header">
-        <div className="parametric-section-title">
-          Integral Table — {table.numRows} rows
-          {stepInfo && <span className="integral-meta"> · {stepInfo}</span>}
+    <div className="table-editor-container">
+      <div className="table-title-header">
+        <div className="table-title-display">
+          <h2 className="table-main-title">Integral Table</h2>
+          <span className="table-meta-badge">{table.numRows} rows</span>
+          {stepInfo && <span className="integral-meta">· {stepInfo}</span>}
         </div>
         <button
-          className="btn-secondary"
+          className="table-btn-pill"
           onClick={handleExport}
           title={`Export the trajectory as ${table.csvName || 'integral.csv'}`}
         >
-          Export CSV
+          <Download size={11} /> Export CSV
         </button>
       </div>
 
-      {/* Plot */}
-      {plotCandidates.length > 0 && (
-        <>
-          <div className="parametric-plot-controls">
-            <label>Y variable:</label>
-            <Select
-              value={plotYVar}
-              options={plotCandidates}
-              onChange={setPlotYVar}
-              style={{ minWidth: 120 }}
-            />
-          </div>
-          {plotData.data.length > 0 && (
-            <div className="parametric-plot">
-              <Plot
-                data={plotData.data}
-                layout={plotData.layout}
-                config={{ responsive: true, displaylogo: false }}
-                useResizeHandler
-                style={{ width: '100%', height: 240 }}
+      <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Plot */}
+        {plotCandidates.length > 0 && (
+          <>
+            <div className="parametric-plot-controls">
+              <label>Y variable:</label>
+              <Select
+                value={plotYVar}
+                options={plotCandidates}
+                onChange={setPlotYVar}
+                style={{ minWidth: 120 }}
               />
             </div>
-          )}
-        </>
-      )}
+            {plotData.data.length > 0 && (
+              <div className="parametric-plot">
+                <Plot
+                  data={plotData.data}
+                  layout={plotData.layout}
+                  config={{ responsive: true, displaylogo: false }}
+                  useResizeHandler
+                  style={{ width: '100%', height: 240 }}
+                />
+              </div>
+            )}
+          </>
+        )}
 
-      {/* Columnar table (integration variable first) */}
-      <div className="parametric-table-container">
-        <table className="variable-table parametric-table">
-          <thead>
-            <tr>
-              {table.columns.map((c) => (
-                <th
-                  key={c}
-                  className={c === table.integrationVar ? 'sweep-col' : ''}
-                >
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Array.from({ length: table.numRows }, (_, r) => (
-              <tr key={r}>
+        {/* Columnar table (integration variable first) */}
+        <div className="parametric-table-container">
+          <table className="variable-table parametric-table">
+            <thead>
+              <tr>
                 {table.columns.map((c) => (
-                  <td
+                  <th
                     key={c}
-                    className={c === table.integrationVar ? 'sweep-col' : 'value-cell'}
+                    className={c === table.integrationVar ? 'sweep-col' : ''}
                   >
-                    {fmt(table.data[c]?.[r] ?? NaN)}
-                  </td>
+                    {c}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {Array.from({ length: table.numRows }, (_, r) => (
+                <tr key={r}>
+                  {table.columns.map((c) => (
+                    <td
+                      key={c}
+                      className={c === table.integrationVar ? 'sweep-col' : 'value-cell'}
+                    >
+                      {fmt(table.data[c]?.[r] ?? NaN)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
+
+      <SyntaxFooter
+        items={[
+          { code: 'x = INTEGRAL(dx_dt, t, 0, 10)' },
+          { code: '$IntegralTable t:0.1, x, dx_dt' },
+        ]}
+        fileHint={table.csvName || '<model>-integral.csv'}
+      />
     </div>
   );
 }

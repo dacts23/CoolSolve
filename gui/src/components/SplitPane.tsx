@@ -8,7 +8,7 @@ interface SplitPaneProps {
   children: [React.ReactNode, React.ReactNode];
   className?: string;
   onResize?: (size: number) => void;
-  collapsed?: 'first' | 'second' | false;
+  collapsed?: 'first' | 'second' | 'both' | false;
 }
 
 export default function SplitPane({
@@ -76,8 +76,8 @@ export default function SplitPane({
   }, [direction, minSize, maxSize, onResize]);
 
   const isHorizontal = direction === 'horizontal';
-  const isFirstCollapsed = collapsed === 'first';
-  const isSecondCollapsed = collapsed === 'second';
+  const isFirstCollapsed = collapsed === 'first' || collapsed === 'both';
+  const isSecondCollapsed = collapsed === 'second' || collapsed === 'both';
 
   return (
     <div
@@ -99,7 +99,7 @@ export default function SplitPane({
           [isHorizontal ? 'width' : 'height']: isFirstCollapsed ? 'auto' : `${size}%`,
           minWidth: !isFirstCollapsed && isHorizontal ? minSize : undefined,
           minHeight: !isFirstCollapsed && !isHorizontal ? minSize : undefined,
-          flex: isSecondCollapsed ? 1 : undefined,
+          flex: isSecondCollapsed && !isFirstCollapsed ? 1 : undefined,
           flexShrink: isFirstCollapsed ? 0 : undefined,
           overflow: 'hidden',
           display: 'flex',
@@ -124,7 +124,7 @@ export default function SplitPane({
         className="split-pane-second"
         style={{
           [isHorizontal ? 'width' : 'height']: isSecondCollapsed ? 'auto' : undefined,
-          flex: isSecondCollapsed ? undefined : 1,
+          flex: isFirstCollapsed && !isSecondCollapsed ? 1 : isSecondCollapsed ? undefined : 1,
           flexShrink: isSecondCollapsed ? 0 : undefined,
           minWidth: !isSecondCollapsed && isHorizontal ? minSize : undefined,
           minHeight: !isSecondCollapsed && !isHorizontal ? minSize : undefined,

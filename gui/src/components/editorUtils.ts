@@ -8,6 +8,7 @@
  */
 
 import type * as Monaco from 'monaco-editor';
+import { useUIStore } from '../stores/uiStore';
 
 /**
  * `@monaco-editor/react`'s loader exposes the Monaco namespace on
@@ -31,6 +32,9 @@ export function setEditorInstance(editor: Monaco.editor.IStandaloneCodeEditor | 
  * Toggle invisible comment: wraps/unwraps selected lines in { ... }
  */
 export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
+  if (useUIStore.getState().activityMode !== 'code') {
+    useUIStore.getState().setActivityMode('code');
+  }
   if (!editor) return;
   const model = editor.getModel();
   const selection = editor.getSelection();
@@ -80,19 +84,42 @@ export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor |
   if (edits.length > 0) {
     editor.executeEdits('comment-toggle', edits);
   }
+  editor.focus();
 }
 
 /**
  * Toggle visible comment: wraps/unwraps selected text in "..."
  */
 export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
+  if (useUIStore.getState().activityMode !== 'code') {
+    useUIStore.getState().setActivityMode('code');
+  }
   if (!editor) return;
   const model = editor.getModel();
   const selection = editor.getSelection();
   if (!model || !selection) return;
 
   const selectedText = model.getValueInRange(selection);
-  if (!selectedText) return;
+  if (!selectedText) {
+    const pos = selection.getPosition();
+    const word = model.getWordAtPosition(pos);
+    if (word) {
+      const range = {
+        startLineNumber: pos.lineNumber,
+        startColumn: word.startColumn,
+        endLineNumber: pos.lineNumber,
+        endColumn: word.endColumn,
+      };
+      const isWordWrapped = word.word.startsWith('"') && word.word.endsWith('"') && word.word.length >= 2;
+      const text = isWordWrapped ? word.word.slice(1, -1) : `"${word.word}"`;
+      editor.executeEdits('comment-toggle', [{ range, text }]);
+    } else {
+      editor.executeEdits('comment-toggle', [{ range: selection, text: '""' }]);
+      editor.setPosition({ lineNumber: pos.lineNumber, column: pos.column + 1 });
+    }
+    editor.focus();
+    return;
+  }
 
   const trimmed = selectedText.trim();
   const isWrapped = trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2;
@@ -111,6 +138,7 @@ export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor |
       text: '"' + selectedText + '"',
     }]);
   }
+  editor.focus();
 }
 
 /** Insert a snippet or statement at the current cursor position in Monaco. */
@@ -128,6 +156,9 @@ export function insertAtCursor(text: string): void {
 
 /** Trigger a built-in Monaco editor action by id (e.g. 'undo', 'redo', 'actions.find'). */
 export function triggerEditorAction(actionId: string): void {
+  if (useUIStore.getState().activityMode !== 'code') {
+    useUIStore.getState().setActivityMode('code');
+  }
   if (!editorInstance) return;
   editorInstance.focus();
   editorInstance.trigger('menu', actionId, null);

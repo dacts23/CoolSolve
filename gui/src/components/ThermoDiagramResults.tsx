@@ -1,8 +1,7 @@
 import { useMemo } from 'react';
 import Plot from './PlotlyChart';
-import Select from './Select';
 import ThermoDiagramIcon from './ThermoDiagramIcon';
-import { useDiagramStore, DIAGRAM_CONFIGS, PROP_UNITS, DIAGRAM_TYPE_OPTIONS, type DiagramType } from '../stores/diagramStore';
+import { useDiagramStore, DIAGRAM_CONFIGS, PROP_UNITS } from '../stores/diagramStore';
 import { useUIStore } from '../stores/uiStore';
 import { useModelStore } from '../stores/modelStore';
 
@@ -13,10 +12,8 @@ export default function ThermoDiagramResults() {
   const {
     selectedFluid,
     diagramType,
-    setDiagramType,
     satData,
     loading,
-    computeTime,
     showStates,
     inferredVars,
     showArrayOverlay,
@@ -230,21 +227,12 @@ export default function ThermoDiagramResults() {
     <div className="parametric-results-view">
       <div className="parametric-results-header">
         <div className="results-summary">
-          <ThermoDiagramIcon size={16} className="text-accent" />
           <span className="results-title">
             {satData?.fluid ?? selectedFluid}
           </span>
-          <Select
-            value={diagramType}
-            options={DIAGRAM_TYPE_OPTIONS}
-            onChange={(val) => setDiagramType(val as DiagramType)}
-            style={{ minWidth: 160 }}
-          />
-          {computeTime !== null && (
-            <span className="results-badge">
-              {computeTime.toFixed(0)} ms
-            </span>
-          )}
+          <span className="results-badge">
+            {diagramType}
+          </span>
           {satData?.critical && (
             <span className="results-sweep-names">
               (T_crit = {satData.critical.T.toFixed(2)} °C, P_crit = {(satData.critical.P / 1e5).toFixed(2)} bar)

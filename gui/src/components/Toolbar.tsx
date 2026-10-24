@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, Sun, Moon, Square, Zap,
-  PanelLeft, PanelRight, PanelBottom, Check, Settings,
+  PanelRight, PanelBottom, Check, Settings,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -17,6 +17,7 @@ import { toErrMsg } from '../utils/errors';
 import { showSessionModel } from '../utils/sessionModel';
 import { useParametricStore } from '../stores/parametricStore';
 import { exportArrayTableToCsv, exportParametricStudyToCsv } from '../utils/csv';
+import { saveFileWithPicker } from '../utils/fileSave';
 import type { SSEEvent, SolveResponse } from '../api/types';
 
 type MenuId = 'file' | 'edit' | 'options' | 'calculate' | 'tables' | 'plots' | 'help' | null;
@@ -39,7 +40,6 @@ export default function Toolbar() {
   const eescode = useModelStore((s) => s.eescode);
   const initials = useModelStore((s) => s.initials);
   const sol = useModelStore((s) => s.sol);
-  const conf = useModelStore((s) => s.conf);
   const modelName = useModelStore((s) => s.modelName);
   const setModelName = useModelStore((s) => s.setModelName);
   const setLookupTables = useModelStore((s) => s.setLookupTables);
@@ -63,15 +63,13 @@ export default function Toolbar() {
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
   const setRightTab = useUIStore((s) => s.setRightTab);
-  const leftPanelOpen = useUIStore((s) => s.leftPanelOpen);
-  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel);
+  const activityMode = useUIStore((s) => s.activityMode);
   const setActivityMode = useUIStore((s) => s.setActivityMode);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel);
   const bottomPanelOpen = useUIStore((s) => s.bottomPanelOpen);
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel);
   const setBottomPanelOpen = useUIStore((s) => s.setBottomPanelOpen);
-  const setBottomTab = useUIStore((s) => s.setBottomTab);
   const activeModal = useUIStore((s) => s.activeModal);
   const setActiveModal = useUIStore((s) => s.setActiveModal);
   const openSettings = useUIStore((s) => s.openSettings);
@@ -172,7 +170,7 @@ export default function Toolbar() {
                 if (result.integralTable) {
                   setIntegralTable(result.integralTable);
                   setIntegralCSV('');
-                  setBottomTab('integral');
+                  setActivityMode('integral');
                 } else {
                   setIntegralTable(null);
                   api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => {});
@@ -234,13 +232,14 @@ export default function Toolbar() {
         setDeepSearchRunning(false);
       }
     },
-    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setBottomTab, setLookupTables, setIntegralTable, setIntegralCSV, setDeepSearchRunning, setTryHarderAvailable, deepSearchRunning]
+    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setActivityMode, setLookupTables, setIntegralTable, setIntegralCSV, setDeepSearchRunning, setTryHarderAvailable, deepSearchRunning]
   );
 
   // Check / Format Equations
   const handleCheckEquations = useCallback(async () => {
     if (!eescode.trim()) return;
-    setBottomTab('console');
+    setActivityMode('code');
+    setBottomPanelOpen(true);
     try {
       const res = await api.parse(eescode);
       const nEq = res.equationCount;
@@ -264,7 +263,7 @@ export default function Toolbar() {
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, addConsoleLine, setBottomTab]);
+  }, [eescode, addConsoleLine, setBottomPanelOpen, setActivityMode]);
 
   // New - clear everything
   const handleNew = useCallback(async () => {
@@ -272,11 +271,12 @@ export default function Toolbar() {
       const res = await api.newModel();
       clearModel();
       setCanGoBack(res.hadContent);
+      setActivityMode('code');
       addConsoleLine('>>> New model');
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [clearModel, addConsoleLine, setCanGoBack]);
+  }, [clearModel, addConsoleLine, setCanGoBack, setActivityMode]);
 
   // Open - supports equation files and .zip bundles
   const handleOpen = useCallback(() => {
@@ -295,6 +295,7 @@ export default function Toolbar() {
           if (res.success) {
             await showSessionModel();
             setCanGoBack(true);
+            setActivityMode('code');
             addConsoleLine(`>>> Opened bundle: ${res.files.join(', ')}`);
           }
         } else {
@@ -305,6 +306,7 @@ export default function Toolbar() {
           await api.putEescode(text);
           loadFile(file.name, text, '', '', '', stem, '');
           setCanGoBack(res.hadContent);
+          setActivityMode('code');
           addConsoleLine(`>>> Opened file: ${file.name}`);
         }
       } catch (err: unknown) {
@@ -312,22 +314,7 @@ export default function Toolbar() {
       }
     };
     input.click();
-  }, [addConsoleLine, setCanGoBack, loadFile]);
-
-  // Helper: trigger a file download from a Blob
-  const downloadBlob = useCallback((blob: Blob, filename: string) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 100);
-  }, []);
+  }, [addConsoleLine, setCanGoBack, loadFile, setActivityMode]);
 
   // Save - download ZIP bundle
   const handleSave = useCallback(async () => {
@@ -341,36 +328,32 @@ export default function Toolbar() {
 
       let name = modelName;
       if (!name) {
-        const input = prompt('Enter model name:', 'model');
-        if (!input) return;
-        name = input.trim() || 'model';
-        setModelName(name);
-        await api.setModelName(name);
+        name = 'model';
       }
 
-      const fileNames: string[] = [name + '.eescode'];
-      if (initials) fileNames.push(name + '.initials');
-      if (sol) fileNames.push(name + '.sol');
-      if (conf) fileNames.push('coolsolve.conf');
-      try {
-        const debugRes = await api.getDebugFiles();
-        if (debugRes.files.length > 0) fileNames.push('debug_output/');
-      } catch { /* no debug */ }
+      const res = await fetch(api.bundleUrl());
+      if (!res.ok) throw new Error(`Failed to download bundle (${res.status})`);
+      const blob = await res.blob();
+      const filename = `${name}.zip`;
+      const result = await saveFileWithPicker(blob, filename, [
+        { description: 'ZIP Bundle (*.zip)', accept: { 'application/zip': ['.zip'] } },
+      ]);
 
-      addConsoleLine(`>>> Saved bundle: ${fileNames.join(', ')}`);
-      window.location.href = api.bundleUrl();
+      if (result.saved) {
+        if (result.name) {
+          const stem = result.name.replace(/\.[^.]+$/, '');
+          if (stem && stem !== modelName) {
+            setModelName(stem);
+            api.setModelName(stem).catch(() => {});
+          }
+        }
+        addConsoleLine(`>>> Saved bundle: ${result.name || filename}`);
+      }
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, initials, sol, conf, modelName, setModelName, addConsoleLine]);
+  }, [eescode, initials, modelName, setModelName, addConsoleLine]);
 
-  // Export plain .eescode
-  const handleExportEescode = useCallback(() => {
-    if (!eescode.trim()) return;
-    const filename = (modelName || 'model') + '.eescode';
-    downloadBlob(new Blob([eescode], { type: 'text/plain;charset=utf-8' }), filename);
-    addConsoleLine(`>>> Exported: ${filename}`);
-  }, [eescode, modelName, downloadBlob, addConsoleLine]);
 
   // Save As
   const handleSaveAs = useCallback(async () => {
@@ -378,32 +361,43 @@ export default function Toolbar() {
       addConsoleLine('>>> Nothing to save');
       return;
     }
-    const currentName = modelName || 'model';
-    const input = prompt('Save As - enter model name:', currentName);
-    if (!input || !input.trim()) return;
-    const stem = input.trim().replace(/\.[^.]+$/, '');
-    setModelName(stem);
-    api.setModelName(stem).catch(() => {});
-    renameTab(activeTabId, `${stem}.eescode`);
+    const stem = modelName || 'model';
     const filename = `${stem}.eescode`;
-    downloadBlob(new Blob([eescode], { type: 'text/plain;charset=utf-8' }), filename);
-    addConsoleLine(`>>> Saved As: ${filename}`);
-  }, [eescode, modelName, setModelName, renameTab, activeTabId, downloadBlob, addConsoleLine]);
-
-  // Open Folder
-  const handleOpenFolder = useCallback(() => {
-    setActivityMode('code');
-    if (!leftPanelOpen) toggleLeftPanel();
-    addConsoleLine('>>> Use the folder icon in the Explorer header to select a workspace directory');
-  }, [setActivityMode, leftPanelOpen, toggleLeftPanel, addConsoleLine]);
+    try {
+      const result = await saveFileWithPicker(
+        new Blob([eescode], { type: 'text/plain;charset=utf-8' }),
+        filename,
+        [{ description: 'CoolSolve Equation File (*.eescode)', accept: { 'text/plain': ['.eescode', '.ees', '.txt'] } }]
+      );
+      if (result.saved && result.name) {
+        const newStem = result.name.replace(/\.[^.]+$/, '');
+        setModelName(newStem);
+        api.setModelName(newStem).catch(() => {});
+        renameTab(activeTabId, result.name);
+        addConsoleLine(`>>> Saved As: ${result.name}`);
+      }
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
+    }
+  }, [eescode, modelName, setModelName, renameTab, activeTabId, addConsoleLine]);
 
   // Export .sol
-  const handleExportSol = useCallback(() => {
+  const handleExportSol = useCallback(async () => {
     if (!sol.trim()) return;
     const filename = (modelName || 'model') + '.sol';
-    downloadBlob(new Blob([sol], { type: 'text/plain;charset=utf-8' }), filename);
-    addConsoleLine(`>>> Exported: ${filename}`);
-  }, [sol, modelName, downloadBlob, addConsoleLine]);
+    try {
+      const result = await saveFileWithPicker(
+        new Blob([sol], { type: 'text/plain;charset=utf-8' }),
+        filename,
+        [{ description: 'Solution File (*.sol)', accept: { 'text/plain': ['.sol', '.txt'] } }]
+      );
+      if (result.saved) {
+        addConsoleLine(`>>> Exported: ${result.name || filename}`);
+      }
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
+    }
+  }, [sol, modelName, addConsoleLine]);
 
   const handleExportArrays = useCallback(() => {
     if (!lastResult?.variables) return;
@@ -449,12 +443,13 @@ export default function Toolbar() {
       if (res.success) {
         await showSessionModel();
         setCanGoBack(false);
+        setActivityMode('code');
         addConsoleLine('>>> Restored previous model');
       }
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [addConsoleLine, setCanGoBack]);
+  }, [addConsoleLine, setCanGoBack, setActivityMode]);
 
   // Stop/cancel solve
   const handleStopSolve = useCallback(async () => {
@@ -502,8 +497,12 @@ export default function Toolbar() {
       addConsoleLine('>>> Compiling LaTeX report to PDF...');
       const pdfBlob = await api.compileLatexReport({ plots });
       const filename = (modelName || 'model') + '_report.pdf';
-      downloadBlob(pdfBlob, filename);
-      addConsoleLine(`>>> PDF report downloaded: ${filename}`);
+      const result = await saveFileWithPicker(pdfBlob, filename, [
+        { description: 'PDF Document (*.pdf)', accept: { 'application/pdf': ['.pdf'] } },
+      ]);
+      if (result.saved) {
+        addConsoleLine(`>>> PDF report downloaded: ${result.name || filename}`);
+      }
     } catch (err: unknown) {
       addConsoleLine(`>>> PDF compilation failed: ${toErrMsg(err)}`);
       addConsoleLine('>>> Falling back to .tex download...');
@@ -512,8 +511,12 @@ export default function Toolbar() {
         if (res.available && res.content) {
           const blob = new Blob([res.content], { type: 'application/x-tex' });
           const filename = (modelName || 'model') + '_report.tex';
-          downloadBlob(blob, filename);
-          addConsoleLine(`>>> LaTeX source downloaded: ${filename}`);
+          const result = await saveFileWithPicker(blob, filename, [
+            { description: 'LaTeX Source File (*.tex)', accept: { 'application/x-tex': ['.tex', '.txt'] } },
+          ]);
+          if (result.saved) {
+            addConsoleLine(`>>> LaTeX source downloaded: ${result.name || filename}`);
+          }
         } else {
           addConsoleLine('>>> No LaTeX report available');
         }
@@ -521,7 +524,7 @@ export default function Toolbar() {
         addConsoleLine('>>> Could not download .tex fallback either');
       }
     }
-  }, [modelName, addConsoleLine, downloadBlob]);
+  }, [modelName, addConsoleLine]);
 
   // Global keyboard shortcuts (IDE conventions)
   useEffect(() => {
@@ -531,6 +534,7 @@ export default function Toolbar() {
         if (!solving) handleSolve(e.shiftKey, tryHarderAvailable && !e.shiftKey);
       } else if (e.key === 'F9') {
         e.preventDefault();
+        setActivityMode('code');
         setRightTab('variables');
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
@@ -556,9 +560,7 @@ export default function Toolbar() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
         e.preventDefault();
         setActiveModal('functionInfo');
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-        e.preventDefault();
-        toggleLeftPanel();
+
       } else if ((e.ctrlKey || e.metaKey) && e.key === '`') {
         e.preventDefault();
         toggleBottomPanel();
@@ -572,7 +574,7 @@ export default function Toolbar() {
   }, [
     solving, handleSolve, handleSave, handleOpen, handleNew,
     handleUpdateGuesses, handleCheckEquations, handleStopSolve,
-    tryHarderAvailable, setRightTab, setActiveModal, toggleLeftPanel, toggleRightPanel, toggleBottomPanel,
+    tryHarderAvailable, setRightTab, setActiveModal, toggleRightPanel, toggleBottomPanel,
   ]);
 
   const menus: Record<Exclude<MenuId, null>, { label: string; items: MenuItem[] }> = {
@@ -581,28 +583,15 @@ export default function Toolbar() {
       items: [
         { label: 'New Model', shortcut: 'Ctrl+N', action: handleNew },
         { label: 'Open File…', shortcut: 'Ctrl+O', action: handleOpen },
-        { label: 'Open Folder…', action: handleOpenFolder },
         { label: 'Open from Model Library…', action: () => setActiveModal('library') },
         { label: 'Revert to Previous Model', disabled: !canGoBack, action: handleBack },
         { divider: true },
         { label: 'Save', shortcut: 'Ctrl+S', disabled: !eescode.trim(), action: handleSave },
         { label: 'Save As…', shortcut: 'Ctrl+Shift+S', disabled: !eescode.trim(), action: handleSaveAs },
-        { label: 'Save Bundle (.zip)…', disabled: !eescode.trim(), action: handleSave },
         { divider: true },
-        { label: 'Close File', shortcut: 'Ctrl+W', action: () => closeTab(activeTabId) },
+        { label: 'Close File', shortcut: 'Ctrl+W', action: () => { setActivityMode('code'); closeTab(activeTabId); } },
         { divider: true },
-        { label: 'Export Equations (.eescode)', disabled: !eescode.trim(), action: handleExportEescode },
         { label: 'Export Solution (.sol)', disabled: !sol.trim(), action: handleExportSol },
-        {
-          label: 'Export Array Table (.csv)',
-          disabled: !hasArrayVariables,
-          action: handleExportArrays,
-        },
-        {
-          label: 'Export Parametric Study (.csv)',
-          disabled: !activeParametricResult,
-          action: handleExportParametric,
-        },
         {
           label: 'Export LaTeX / PDF Report…',
           disabled: !lastResult?.success || !lastResult?.latexReportAvailable,
@@ -626,10 +615,10 @@ export default function Toolbar() {
     options: {
       label: 'Options',
       items: [
-        { label: 'Variable Info & Guesses…', shortcut: 'F9', action: () => setRightTab('variables') },
+        { label: 'Variable Info & Guesses…', shortcut: 'F9', action: () => { setActivityMode('code'); setRightTab('variables'); } },
         { label: 'Function Info…', shortcut: 'Ctrl+I', action: () => setActiveModal('functionInfo') },
         { label: 'Unit System ($UnitSystem)…', action: () => setActiveModal('unitSystem') },
-        { label: 'Solver Configuration (coolsolve.conf)…', action: () => setRightTab('config') },
+        { label: 'Solver Configuration (coolsolve.conf)…', action: () => { setActivityMode('code'); setRightTab('config'); } },
       ],
     },
     calculate: {
@@ -649,9 +638,9 @@ export default function Toolbar() {
       label: 'Tables',
       items: [
         { label: 'Parametric Table (Sensitivity Study)', action: () => setActivityMode('parametric') },
-        { label: 'Lookup Tables', action: () => setBottomTab('lookuptables') },
-        { label: 'Arrays Table', action: () => setRightTab('arrays') },
-        { label: 'Integral Table ($IntegralTable)', action: () => setBottomTab('integral') },
+        { label: 'Lookup Tables', action: () => setActivityMode('tables') },
+        { label: 'Arrays Table', action: () => { setActivityMode('code'); setRightTab('arrays'); } },
+        { label: 'Integral Table ($IntegralTable)', action: () => setActivityMode('integral') },
         { divider: true },
         { label: 'Export Arrays Table to CSV', disabled: !hasArrayVariables, action: handleExportArrays },
         { label: 'Export Parametric Study to CSV', disabled: !activeParametricResult, action: handleExportParametric },
@@ -661,8 +650,6 @@ export default function Toolbar() {
       label: 'Plots',
       items: [
         { label: 'Property Diagram (T-s, P-h, h-s, T-h)', action: () => setActivityMode('diagrams') },
-        { label: 'Parametric X-Y & Contour Plots', action: () => setActivityMode('parametric') },
-        { label: 'Integral Trajectory Plot', action: () => setBottomTab('integral') },
       ],
     },
     help: {
@@ -672,7 +659,6 @@ export default function Toolbar() {
           label: 'Language & Fluid Reference',
           action: () => window.open('/docs/#docs%2Flanguage_reference.md', '_blank', 'noopener,noreferrer'),
         },
-        { label: 'Browse Model Library…', action: () => setActiveModal('library') },
         { divider: true },
         { label: 'About CoolSolve-Canary', action: () => setActiveModal('about') },
       ],
@@ -764,16 +750,11 @@ export default function Toolbar() {
 
         <div className="topbar-divider" />
 
+
         <button
-          className={`icon-btn ${leftPanelOpen ? 'active' : ''}`}
-          onClick={toggleLeftPanel}
-          title="Toggle Primary Sidebar (Ctrl+B)"
-        >
-          <PanelLeft size={15} />
-        </button>
-        <button
-          className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
+          className={`icon-btn ${rightPanelOpen && activityMode === 'code' ? 'active' : ''}`}
           onClick={toggleRightPanel}
+          disabled={activityMode !== 'code'}
           title="Toggle Right Inspector"
         >
           <PanelRight size={15} />

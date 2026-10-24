@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Table2, ChevronLeft, Plus, Trash2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import ConfirmModal from './ConfirmModal';
+import { Table2, Plus, Trash2 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
-import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
 
 export default function LookupTablesSetup() {
-  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel);
   const lookupTables = useModelStore((s) => s.lookupTables);
   const setLookupTables = useModelStore((s) => s.setLookupTables);
   const setLookupTableCSV = useModelStore((s) => s.setLookupTableCSV);
@@ -16,6 +15,7 @@ export default function LookupTablesSetup() {
   const [newTableName, setNewTableName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tableToDelete, setTableToDelete] = useState<string | null>(null);
   useEffect(() => {
     api.getTables()
       .then((res) => {
@@ -47,9 +47,10 @@ export default function LookupTablesSetup() {
     }
   };
 
-  const handleDeleteTable = async (name: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`Delete lookup table "${name}"?`)) return;
+  const confirmDeleteTable = async () => {
+    if (!tableToDelete) return;
+    const name = tableToDelete;
+    setTableToDelete(null);
     try {
       await api.deleteTable(name);
       removeLookupTable(name);
@@ -67,15 +68,6 @@ export default function LookupTablesSetup() {
         <div className="explorer-title-group">
           <Table2 size={14} className="accent-icon" />
           <span className="explorer-title">LOOKUP TABLES</span>
-        </div>
-        <div className="explorer-actions">
-          <button
-            className="icon-btn small"
-            onClick={toggleLeftPanel}
-            title="Collapse Sidebar"
-          >
-            <ChevronLeft size={13} />
-          </button>
         </div>
       </div>
 
@@ -142,7 +134,7 @@ export default function LookupTablesSetup() {
                     </div>
                     <button
                       className="icon-btn small"
-                      onClick={(e) => handleDeleteTable(tbl.name, e)}
+                      onClick={(e) => { e.stopPropagation(); setTableToDelete(tbl.name); }}
                       title={`Delete ${tbl.name}`}
                       style={{ opacity: 0.7 }}
                     >
@@ -154,20 +146,17 @@ export default function LookupTablesSetup() {
             </div>
           )}
         </div>
-        <div className="parametric-section">
-          <div className="parametric-section-title">SYNTAX REFERENCE</div>
-          <div className="parametric-notice" style={{ fontSize: 11, lineHeight: 1.5 }}>
-            <div style={{ marginBottom: 4 }}>
-              <code>LOOKUP('tab', row, col)</code><br />
-              Direct cell lookup (1-indexed)
-            </div>
-            <div>
-              <code>INTERPOLATE('tab', 'x', 'y', xval)</code><br />
-              1-D linear interpolation
-            </div>
-          </div>
-        </div>
+
       </div>
+      {tableToDelete && (
+        <ConfirmModal
+          title="Delete Lookup Table"
+          message={`Are you sure you want to delete lookup table "${tableToDelete}"? This action cannot be undone.`}
+          confirmLabel="Delete Table"
+          onConfirm={confirmDeleteTable}
+          onCancel={() => setTableToDelete(null)}
+        />
+      )}
     </div>
   );
 }

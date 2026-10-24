@@ -1,7 +1,6 @@
-import { useMemo, useCallback } from 'react';
-import { Sigma, ChevronLeft, Download } from 'lucide-react';
+import { useMemo } from 'react';
+import { Sigma } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
-import { useUIStore } from '../stores/uiStore';
 import type { IntegralTableData } from '../api/types';
 
 function parseCSVToTable(csv: string, csvName: string): IntegralTableData | null {
@@ -51,17 +50,7 @@ function parseCSVToTable(csv: string, csvName: string): IntegralTableData | null
     csvName,
   };
 }
-
-function tableToCSV(table: IntegralTableData): string {
-  const lines: string[] = [table.columns.join(',')];
-  for (let r = 0; r < table.numRows; r++) {
-    lines.push(table.columns.map((c) => table.data[c]?.[r] ?? '').join(','));
-  }
-  return lines.join('\n') + '\n';
-}
-
 export default function IntegralSetup() {
-  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel);
   const integralTable = useModelStore((s) => s.integralTable);
   const integralCSV = useModelStore((s) => s.integralCSV);
 
@@ -73,36 +62,12 @@ export default function IntegralSetup() {
     }
     return null;
   }, [integralTable, integralCSV]);
-
-  const handleExport = useCallback(() => {
-    if (!table) return;
-    const csv = tableToCSV(table);
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = table.csvName || 'integral.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [table]);
-
   return (
     <div className="parametric-setup-sidebar">
       <div className="explorer-header">
         <div className="explorer-title-group">
           <Sigma size={14} className="accent-icon" />
           <span className="explorer-title">INTEGRAL TRAJECTORY</span>
-        </div>
-        <div className="explorer-actions">
-          <button
-            className="icon-btn small"
-            onClick={toggleLeftPanel}
-            title="Collapse Sidebar"
-          >
-            <ChevronLeft size={13} />
-          </button>
         </div>
       </div>
 
@@ -131,16 +96,6 @@ export default function IntegralSetup() {
                   <span>{table.rejectedSteps}</span>
                 </div>
               )}
-
-              <button
-                className="btn-secondary"
-                style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
-                onClick={handleExport}
-                title="Download CSV"
-              >
-                <Download size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                Export CSV
-              </button>
             </div>
           ) : (
             <div className="parametric-notice">
@@ -172,19 +127,6 @@ export default function IntegralSetup() {
             </div>
           </div>
         )}
-        <div className="parametric-section">
-          <div className="parametric-section-title">SYNTAX GUIDE</div>
-          <div className="parametric-notice" style={{ fontSize: 11, lineHeight: 1.5 }}>
-            <div style={{ marginBottom: 6 }}>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Function call:</div>
-              <code>x = INTEGRAL(dx_dt, t, 0, 10)</code>
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Table directive:</div>
-              <code>$IntegralTable t:0.1, x, dx_dt</code>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );

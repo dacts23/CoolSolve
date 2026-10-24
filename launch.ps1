@@ -43,9 +43,29 @@ $edge = @(
 
 $profile = Join-Path $env:TEMP "coolsolve_desktop_profile"
 
+$defaultDir = Join-Path $profile "Default"
+if (-not (Test-Path $defaultDir)) {
+    New-Item -ItemType Directory -Path $defaultDir -Force | Out-Null
+}
+$prefPath = Join-Path $defaultDir "Preferences"
+$prefs = @{}
+if (Test-Path $prefPath) {
+    try { $prefs = Get-Content $prefPath -Raw | ConvertFrom-Json -AsHashtable } catch {}
+}
+if (-not $prefs) { $prefs = @{} }
+$prefs["edge_quick_search"] = @{
+    "show_mini_menu" = $false
+    "enable_quick_search" = $false
+    "PDF_show_mini_menu" = $false
+    "customized_disabled_sites" = @("localhost", "127.0.0.1")
+}
+try {
+    $prefs | ConvertTo-Json -Depth 20 | Set-Content $prefPath -Encoding UTF8
+} catch {}
+
 if ($edge) {
     Write-Host "Opening standalone window via $edge..." -ForegroundColor Cyan
-    Start-Process -FilePath $edge -ArgumentList "--app=http://127.0.0.1:5173", "--window-size=1400,880", "--user-data-dir=`"$profile`"", "--no-first-run", "--no-default-browser-check"
+    Start-Process -FilePath $edge -ArgumentList "--app=http://127.0.0.1:5173", "--window-size=1400,880", "--user-data-dir=`"$profile`"", "--no-first-run", "--no-default-browser-check", "--disable-features=Translate,msEdgeSidebarV2,msWebOOUI,msPdfOOUI,QuickSearch,msEdgeQuickSearch"
 } else {
     Start-Process "http://127.0.0.1:5173"
 }

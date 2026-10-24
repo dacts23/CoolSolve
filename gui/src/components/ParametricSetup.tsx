@@ -1,9 +1,9 @@
-import { useMemo } from 'react';
-import { Play, Square, ChevronLeft, LineChart, Trash2 } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import ConfirmModal from './ConfirmModal';
+import { Play, Square, LineChart, Trash2 } from 'lucide-react';
 import Select from './Select';
 import ExportCsvIcon from './ExportCsvIcon';
 import { useModelStore } from '../stores/modelStore';
-import { useUIStore } from '../stores/uiStore';
 import { useParametricStore, fmt } from '../stores/parametricStore';
 import { exportParametricStudyToCsv } from '../utils/csv';
 import type { VariableInfo } from '../api/types';
@@ -102,10 +102,16 @@ function SweepInput({
 }
 
 export default function ParametricSetup() {
-  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel);
   const parsedVariables = useModelStore((s) => s.parsedVariables);
   const parametricStudies = useModelStore((s) => s.parametricStudies);
   const removeParametricStudy = useModelStore((s) => s.removeParametricStudy);
+  const [studyToDelete, setStudyToDelete] = useState<{ id: string; name: string } | null>(null);
+
+  const confirmDeleteStudy = () => {
+    if (!studyToDelete) return;
+    removeParametricStudy(studyToDelete.id);
+    setStudyToDelete(null);
+  };
 
   const {
     var1Name, setVar1Name, var1Min, setVar1Min, var1Max, setVar1Max, var1Steps, setVar1Steps,
@@ -126,15 +132,6 @@ export default function ParametricSetup() {
         <div className="explorer-title-group">
           <LineChart size={14} className="accent-icon" />
           <span className="explorer-title">PARAMETRIC SWEEP</span>
-        </div>
-        <div className="explorer-actions">
-          <button
-            className="icon-btn small"
-            onClick={toggleLeftPanel}
-            title="Collapse Sidebar"
-          >
-            <ChevronLeft size={13} />
-          </button>
         </div>
       </div>
 
@@ -273,7 +270,7 @@ export default function ParametricSetup() {
                       className="study-delete-btn"
                       onClick={(e) => {
                         e.stopPropagation();
-                        removeParametricStudy(s.id);
+                        setStudyToDelete({ id: s.id, name: s.name });
                       }}
                       title="Delete study"
                     >
@@ -286,6 +283,15 @@ export default function ParametricSetup() {
           </div>
         )}
       </div>
+      {studyToDelete && (
+        <ConfirmModal
+          title="Delete Parametric Study"
+          message={`Are you sure you want to delete parametric study "${studyToDelete.name}"? This action cannot be undone.`}
+          confirmLabel="Delete Study"
+          onConfirm={confirmDeleteStudy}
+          onCancel={() => setStudyToDelete(null)}
+        />
+      )}
     </div>
   );
 }

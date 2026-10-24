@@ -1,14 +1,12 @@
 import { useEffect, useMemo } from 'react';
-import { ChevronLeft, Play, Loader2 } from 'lucide-react';
+import { Play, Loader2 } from 'lucide-react';
 import ThermoDiagramIcon from './ThermoDiagramIcon';
 import Select, { type SelectOption } from './Select';
 import { useDiagramStore, type DiagramType, DIAGRAM_TYPE_OPTIONS } from '../stores/diagramStore';
 import { useModelStore } from '../stores/modelStore';
-import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
 
 export default function ThermoDiagramSetup() {
-  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel);
   const lastResult = useModelStore((s) => s.lastResult);
 
   const {
@@ -19,6 +17,7 @@ export default function ThermoDiagramSetup() {
     satData,
     loading,
     error,
+    computeTime,
     showStates,
     showArrayOverlay,
     arrayXVar,
@@ -105,15 +104,6 @@ export default function ThermoDiagramSetup() {
           <ThermoDiagramIcon size={14} className="accent-icon" />
           <span className="explorer-title">PROPERTY DIAGRAMS</span>
         </div>
-        <div className="explorer-actions">
-          <button
-            className="icon-btn small"
-            onClick={toggleLeftPanel}
-            title="Collapse Sidebar"
-          >
-            <ChevronLeft size={13} />
-          </button>
-        </div>
       </div>
 
       <div className="parametric-setup-content">
@@ -137,7 +127,7 @@ export default function ThermoDiagramSetup() {
             style={{ width: '100%' }}
           />
         </div>
-        <div className="parametric-actions-panel">
+        <div className="parametric-actions-bar">
           <button
             className="parametric-run-btn"
             onClick={generate}
@@ -146,6 +136,23 @@ export default function ThermoDiagramSetup() {
             {loading ? <Loader2 size={13} className="spin" /> : <Play size={13} />}
             <span>{loading ? 'Computing dome…' : 'Generate Diagram'}</span>
           </button>
+          {computeTime !== null && (
+            <span
+              style={{
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                padding: '3px 7px',
+                borderRadius: 4,
+                background: 'var(--bg-tertiary)',
+                fontFamily: 'var(--mono-font)',
+              }}
+              title="Dome computation time"
+            >
+              {computeTime.toFixed(0)} ms
+            </span>
+          )}
         </div>
         {satData && lastResult?.success && (
           <div className="parametric-section" style={{ borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>

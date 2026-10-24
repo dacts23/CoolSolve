@@ -14,7 +14,6 @@ import IntegralTable from './components/IntegralTable';
 import UsageStats from './components/UsageStats';
 import SplitPane from './components/SplitPane';
 import ActivityBar from './components/ActivityBar';
-import WorkspaceExplorer from './components/WorkspaceExplorer';
 import ParametricSetup from './components/ParametricSetup';
 import ParametricResults from './components/ParametricResults';
 import LookupTablesSetup from './components/LookupTablesSetup';
@@ -49,7 +48,6 @@ function MainApp() {
   const palette = useUIStore((s) => s.palette);
   const accent = useUIStore((s) => s.accent);
   const activityMode = useUIStore((s) => s.activityMode);
-  const leftPanelOpen = useUIStore((s) => s.leftPanelOpen);
   const leftPanelWidth = useUIStore((s) => s.leftPanelWidth);
   const setLeftPanelWidth = useUIStore((s) => s.setLeftPanelWidth);
   const rightTab = useUIStore((s) => s.rightTab);
@@ -115,17 +113,36 @@ function MainApp() {
     applyAppearance(palette, accent);
   }, [palette, accent]);
 
-  // Prevent default browser context menu globally (except in text inputs)
+  // Prevent default browser context menu and accidental text selection globally
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      const target = e.target as HTMLElement | null;
+      // Allow Monaco editor's in-app HTML context menu
+      if (target?.closest?.('.monaco-editor')) {
         return;
       }
       e.preventDefault();
     };
-    window.addEventListener('contextmenu', handleContextMenu);
-    return () => window.removeEventListener('contextmenu', handleContextMenu);
+
+    const handleDblClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest?.('.monaco-editor')
+      ) {
+        return;
+      }
+      window.getSelection()?.removeAllRanges();
+    };
+
+    window.addEventListener('contextmenu', handleContextMenu, true);
+    window.addEventListener('dblclick', handleDblClick);
+    return () => {
+      window.removeEventListener('contextmenu', handleContextMenu, true);
+      window.removeEventListener('dblclick', handleDblClick);
+    };
   }, []);
 
   if (!ready) {
@@ -275,10 +292,9 @@ function MainApp() {
 
   const topWorkspace = (
     <div className="workspace-row" style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
-      {leftPanelOpen && (
+      {activityMode !== 'code' && (
         <div className="left-sidebar-container" style={{ width: leftPanelWidth, display: 'flex', flexShrink: 0, height: '100%', position: 'relative' }}>
           <div className="left-panel" style={{ flex: 1, minWidth: 0 }}>
-            {activityMode === 'code' && <WorkspaceExplorer />}
             {activityMode === 'parametric' && <ParametricSetup />}
             {activityMode === 'diagrams' && <ThermoDiagramSetup />}
             {activityMode === 'tables' && <LookupTablesSetup />}

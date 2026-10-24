@@ -3,7 +3,6 @@ import { systemTheme, type ThemeMode, DEFAULT_EDITOR_FONT_SIZE, STANDARD_FONT_SI
 
 export type ActivityMode = 'code' | 'parametric' | 'diagrams' | 'tables' | 'integral';
 export type RightTab = 'variables' | 'arrays' | 'config' | 'debug';
-export type BottomTab = 'console' | 'sensitivity' | 'diagrams' | 'lookuptables' | 'integral';
 export type ModalType = 'library' | 'functionInfo' | 'unitSystem' | 'about' | 'settings' | null;
 export type SettingsTab = 'appearance' | 'editor';
 
@@ -23,7 +22,6 @@ interface UIState {
   palette: string;
   rightTab: RightTab;
   rightPanelOpen: boolean;
-  bottomTab: BottomTab;
   bottomPanelOpen: boolean;
   consolePosition: 'bottom' | 'rhs';
   minimap: boolean;
@@ -53,7 +51,6 @@ interface UIState {
   setRightTab: (tab: RightTab) => void;
   setRightPanelOpen: (open: boolean) => void;
   toggleRightPanel: () => void;
-  setBottomTab: (tab: BottomTab) => void;
   setBottomPanelOpen: (open: boolean) => void;
   toggleBottomPanel: () => void;
   setConsolePosition: (pos: 'bottom' | 'rhs') => void;
@@ -81,7 +78,7 @@ export const useUIStore = create<UIState>((set) => ({
   editorTheme: localStorage.getItem('coolsolve-editor-theme') || 'default',
   editorFont: localStorage.getItem('coolsolve-editor-font') || 'consolas',
   editorFontSize: Number(localStorage.getItem('coolsolve-editor-font-size')) || DEFAULT_EDITOR_FONT_SIZE,
-  forceAppBg: localStorage.getItem('coolsolve-force-app-bg') !== 'false',
+  forceAppBg: localStorage.getItem('coolsolve-force-app-bg') === 'true',
   settingsTab: 'appearance',
   activityMode: 'code',
   leftPanelOpen: false,
@@ -89,13 +86,12 @@ export const useUIStore = create<UIState>((set) => ({
   palette: localStorage.getItem('coolsolve-palette') || 'default',
   rightTab: 'variables',
   rightPanelOpen: true,
-  bottomTab: 'console',
   bottomPanelOpen: true,
-  consolePosition: (localStorage.getItem('coolsolve-console-pos') as 'bottom' | 'rhs') || 'bottom',
-  minimap: localStorage.getItem('coolsolve-minimap') === 'true',
+  consolePosition: (localStorage.getItem('coolsolve-console-pos') as 'bottom' | 'rhs') || 'rhs',
+  minimap: localStorage.getItem('coolsolve-minimap') !== 'false',
   wordWrap: localStorage.getItem('coolsolve-word-wrap') !== 'false',
-  stickyScroll: localStorage.getItem('coolsolve-sticky-scroll') === 'true',
-  showUnderlines: localStorage.getItem('coolsolve-show-underlines') === 'true',
+  stickyScroll: localStorage.getItem('coolsolve-sticky-scroll') !== 'false',
+  showUnderlines: localStorage.getItem('coolsolve-show-underlines') !== 'false',
   activeModal: null,
   splitPosition: 58,
 
@@ -176,13 +172,12 @@ export const useUIStore = create<UIState>((set) => ({
       localStorage.setItem('coolsolve-theme', nextTheme);
       return { palette: nextPalette, theme: nextTheme, themeMode: nextTheme };
     }),
-  setActivityMode: (activityMode) => set({ activityMode, leftPanelOpen: true }),
-  setLeftPanelOpen: (leftPanelOpen) => set({ leftPanelOpen }),
-  toggleLeftPanel: () => set((s) => ({ leftPanelOpen: !s.leftPanelOpen })),
+  setActivityMode: (activityMode) => set({ activityMode, leftPanelOpen: activityMode !== 'code' }),
+  setLeftPanelOpen: (leftPanelOpen) => set((s) => (s.activityMode === 'code' ? s : { leftPanelOpen })),
+  toggleLeftPanel: () => set((s) => (s.activityMode === 'code' ? s : { leftPanelOpen: !s.leftPanelOpen })),
   setRightTab: (tab) => set({ rightTab: tab, rightPanelOpen: true }),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
-  setBottomTab: (tab) => set({ bottomTab: tab, bottomPanelOpen: true }),
   setBottomPanelOpen: (open) => set({ bottomPanelOpen: open }),
   toggleBottomPanel: () => set((s) => ({ bottomPanelOpen: !s.bottomPanelOpen })),
   setConsolePosition: (consolePosition) => {

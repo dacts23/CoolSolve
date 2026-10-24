@@ -1,3 +1,4 @@
+import { saveFileWithPicker } from './fileSave';
 
 function escapeCsvCell(val: string | number | undefined | null): string {
   if (val === undefined || val === null) return '';
@@ -9,43 +10,14 @@ function escapeCsvCell(val: string | number | undefined | null): string {
 }
 
 export async function downloadCsv(suggestedName: string, csvContent: string): Promise<void> {
-  if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
-    try {
-      const handle = await (window as unknown as {
-        showSaveFilePicker: (opts: {
-          suggestedName?: string;
-          types?: { description: string; accept: Record<string, string[]> }[];
-        }) => Promise<FileSystemFileHandle>;
-      }).showSaveFilePicker({
-        suggestedName,
-        types: [
-          {
-            description: 'CSV File (*.csv)',
-            accept: {
-              'text/csv': ['.csv'],
-            },
-          },
-        ],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(csvContent);
-      await writable.close();
-      return;
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        return;
-      }
-    }
-  }
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  await saveFileWithPicker(csvContent, suggestedName, [
+    {
+      description: 'CSV File (*.csv)',
+      accept: {
+        'text/csv': ['.csv'],
+      },
+    },
+  ]);
 }
 
 export async function exportArrayTableToCsv(
