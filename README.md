@@ -4,10 +4,13 @@
 
 # CoolSolve-Canary
 
-> **About this fork (`CoolSolve-Canary`)**  
-> **CoolSolve-Canary** is a GUI-focused fork of **[CoolProp/CoolSolve](https://github.com/CoolProp/CoolSolve)**, originally created and developed by **[Sylvain Quoilin](https://github.com/squoilin)** (`squoilin@ulg.ac.be`).  
+> **Fork Notice & Attribution**  
+> **CoolSolve-Canary** is an experimental GUI fork of **[CoolProp/CoolSolve](https://github.com/CoolProp/CoolSolve)**, created and developed by **[Sylvain Quoilin](https://www.uliege.be/cms/c_9054334/en/directory?uid=U203754)** ([ISES Research Group](https://www.ises.uliege.be/), Université de Liège) as part of the **[CoolProp](https://github.com/CoolProp/CoolProp)** ecosystem.
 >
-> All credit for the parser, structural analyzer, automatic differentiation, solver pipeline, CoolProp integration, and core architecture belongs to **Sylvain Quoilin** and the **CoolProp** project. This fork strictly experiments with frontend GUI and UX improvements (IDE-style workspace layout, multi-tabbed editor, theme palettes, resizable subpanels, and diagram interactions) designed to be upstreamed back to the main repository.
+> - **Upstream Credit**: All core engineering and scientific work (the parser, Hopcroft-Karp / Tarjan structural analyzer, forward-mode automatic differentiation, nonlinear and dynamic solver pipelines, CoolProp integration, and embedded model library) is the work of **Sylvain Quoilin** and the **CoolProp** contributors.
+> - **Scope of This Fork**: This repository only modifies the React/TypeScript frontend (`gui/`), standalone window launcher, and side-by-side Windows installer (`CoolSolve-Canary`) to test workspace UI ideas before proposing them upstream.
+> - **Official Releases & Issues**: For the official project, stable releases, online demo, and solver/language issue reporting, please visit **[CoolProp/CoolSolve](https://github.com/CoolProp/CoolSolve)**.
+> - **License**: Distributed under the **[MIT License](LICENSE)** (`Copyright (c) 2026 CoolProp`), preserving all upstream license terms and copyright notices.
 
 ### Code Editor & Solution Workspace
 ![CoolSolve-Canary Code Editor](docs/canary_editor.png)

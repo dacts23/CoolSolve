@@ -504,13 +504,17 @@ function AboutModal({ onClose }: { onClose: () => void }) {
           <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
             Experimental GUI fork of{' '}
             <a href="https://github.com/CoolProp/CoolSolve" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)' }}>
-              CoolSolve
+              CoolProp/CoolSolve
             </a>
-            , originally created and developed by <strong>Sylvain Quoilin</strong> and the{' '}
-            <a href="https://github.com/CoolProp" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)' }}>
+            , originally created and developed by{' '}
+            <a href="https://www.uliege.be/cms/c_9054334/en/directory?uid=U203754" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)' }}>
+              <strong>Sylvain Quoilin</strong>
+            </a>{' '}
+            (<a href="https://www.ises.uliege.be/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)' }}>ISES Research Group</a>, Université de Liège) as part of the{' '}
+            <a href="https://github.com/CoolProp/CoolProp" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)' }}>
               CoolProp
             </a>{' '}
-            team. Powered by the upstream C++ symbolic-numeric block solver, automatic differentiation, and CoolProp thermophysical properties.
+            project. Released under the MIT License (Copyright (c) 2026 CoolProp).
           </p>
           <div className="shortcut-table">
             <div><span>Solve Model</span><kbd>F2</kbd> / <kbd>Ctrl+Enter</kbd></div>
