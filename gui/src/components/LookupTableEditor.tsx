@@ -3,48 +3,8 @@ import ConfirmModal from './ConfirmModal';
 import SyntaxFooter from './SyntaxFooter';
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
-import { downloadCsv } from '../utils/csv';
-import { Plus, Minus, Upload, Download, Save, Trash2 } from 'lucide-react';
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function parseCSV(csv: string): string[][] {
-  const rows: string[][] = [];
-  const lines = csv.split(/\r?\n/);
-  for (const line of lines) {
-    if (line.trim() === '') continue;
-    // Simple CSV parser: handles quoted fields
-    const cells: string[] = [];
-    let current = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        inQuotes = !inQuotes;
-      } else if (ch === ',' && !inQuotes) {
-        cells.push(current.trim());
-        current = '';
-      } else {
-        current += ch;
-      }
-    }
-    cells.push(current.trim());
-    rows.push(cells);
-  }
-  return rows;
-}
-
-function serializeCSV(rows: string[][]): string {
-  return rows
-    .map((row) =>
-      row
-        .map((cell) => (cell.includes(',') || cell.includes('"') ? `"${cell.replace(/"/g, '""')}"` : cell))
-        .join(',')
-    )
-    .join('\n');
-}
+import { downloadCsv, parseCSV, serializeCSV } from '../utils/csv';
+import { Plus, Minus, Upload, Download, Save, Trash2, Copy, Check, Table2 } from 'lucide-react';
 
 // ============================================================================
 // TableGrid: editable grid for one table
@@ -58,6 +18,7 @@ interface TableGridProps {
 function TableGrid({ tableName, onSaved }: TableGridProps) {
   const lookupTableCSVs = useModelStore((s) => s.lookupTableCSVs);
   const setLookupTableCSV = useModelStore((s) => s.setLookupTableCSV);
+  const setLookupTableDirty = useModelStore((s) => s.setLookupTableDirty);
 
   const rawCSV = lookupTableCSVs[tableName] ?? '';
   const [rows, setRows] = useState<string[][]>(() => {
@@ -66,11 +27,30 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     if (parsed.length === 0) return [['Column1', 'Column2'], ['', ''], ['', '']];
     return parsed;
   });
+
+  // Any cell edit marks the grid dirty (uncommitted work). The async CSV load
+  // below keeps plain setRows: it is not an edit.
+  const editRows = useCallback(
+    (updater: React.SetStateAction<string[][]>) => {
+      setRows(updater);
+      setLookupTableDirty(true);
+    },
+    [setLookupTableDirty]
+  );
+
+  // Sync rows if rawCSV loads asynchronously from the backend — but never over
+  // cell edits the user already made while the load was in flight.
+  React.useEffect(() => {
+    if (rawCSV && !useModelStore.getState().lookupTableDirty) {
+      const parsed = parseCSV(rawCSV);
+      if (parsed.length > 0) setRows(parsed);
+    }
+  }, [rawCSV]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const setCell = (r: number, c: number, val: string) => {
-    setRows((prev) => {
+    editRows((prev) => {
       const next = prev.map((row) => [...row]);
       next[r][c] = val;
       return next;
@@ -78,10 +58,10 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
   };
 
   const addRow = () =>
-    setRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
+    editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
 
   const addColumn = () =>
-    setRows((prev) => prev.map((row, i) => [...row, i === 0 ? `Column${row.length + 1}` : '']));
+    editRows((prev) => prev.map((row, i) => [...row, i === 0 ? `Column${row.length + 1}` : '']));
 
   const gridContainerRef = useRef<HTMLDivElement>(null);
 
@@ -101,19 +81,19 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
 
   const deleteRow = useCallback((r: number) => {
     if (r === 0 || rows.length <= 2) return; // keep header + at least 1 data row
-    setRows((prev) => prev.filter((_, i) => i !== r));
+    editRows((prev) => prev.filter((_, i) => i !== r));
     const nextRow = Math.min(r, rows.length - 2);
     const col = lastFocusedCell?.c ?? 0;
     setTimeout(() => focusCell(nextRow, col), 0);
-  }, [rows.length, lastFocusedCell, focusCell]);
+  }, [rows.length, lastFocusedCell, focusCell, editRows]);
 
   const deleteColumn = useCallback((c: number) => {
     if (rows[0]?.length <= 1) return; // keep at least 1 column
-    setRows((prev) => prev.map((row) => row.filter((_, i) => i !== c)));
+    editRows((prev) => prev.map((row) => row.filter((_, i) => i !== c)));
     const nextCol = Math.min(c, (rows[0]?.length ?? 2) - 2);
     const row = lastFocusedCell?.r ?? 0;
     setTimeout(() => focusCell(row, nextCol), 0);
-  }, [rows, lastFocusedCell, focusCell]);
+  }, [rows, lastFocusedCell, focusCell, editRows]);
 
   const handleRemoveRow = () => {
     if (rows.length <= 2) return;
@@ -138,6 +118,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
       const csv = serializeCSV(rows);
       await api.putTable(tableName, csv);
       setLookupTableCSV(tableName, csv);
+      setLookupTableDirty(false);
       onSaved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -169,7 +150,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
           focusCell(r + 1, c);
         } else {
           // On last row, press Enter to append a new row and focus it (like Excel)
-          setRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
+          editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
           setTimeout(() => focusCell(numRows, c), 0);
         }
       }
@@ -226,7 +207,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
         } else if (r < numRows - 1) {
           focusCell(r + 1, 0);
         } else {
-          setRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
+          editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
           setTimeout(() => focusCell(numRows, 0), 0);
         }
       }
@@ -241,7 +222,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
       const parsed = parseCSV(text);
-      if (parsed.length > 0) setRows(parsed);
+      if (parsed.length > 0) editRows(parsed);
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -250,6 +231,14 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
   const handleExportCSV = async () => {
     const csv = serializeCSV(rows);
     await downloadCsv(`${tableName}.csv`, csv);
+  };
+
+  const [copiedTsv, setCopiedTsv] = useState(false);
+  const handleCopyTSV = () => {
+    const tsv = rows.map((r) => r.join('\t')).join('\n');
+    navigator.clipboard.writeText(tsv);
+    setCopiedTsv(true);
+    setTimeout(() => setCopiedTsv(false), 1200);
   };
 
   const numCols = rows[0]?.length ?? 0;
@@ -294,6 +283,9 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
           </label>
           <button className="table-btn-pill" onClick={handleExportCSV} title="Export table to CSV">
             <Download size={11} /> Export CSV
+          </button>
+          <button className="table-btn-pill" onClick={handleCopyTSV} title="Copy table as TSV (paste into Excel)">
+            {copiedTsv ? <Check size={11} /> : <Copy size={11} />} {copiedTsv ? 'Copied' : 'Copy TSV'}
           </button>
         </div>
 
@@ -388,6 +380,9 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
         items={[
           { code: `LOOKUP('${tableName}', row, col)` },
           { code: `INTERPOLATE('${tableName}', '${rows[0]?.[0] || 'xcol'}', '${rows[0]?.[1] || 'ycol'}', xval)` },
+          { code: `INTERPOLATE2('${tableName}', '${rows[0]?.[0] || 'xcol'}', '${rows[0]?.[1] || 'ycol'}', '${rows[0]?.[2] || 'zcol'}', x, y)` },
+          { code: `LOOKUP$ROW('${tableName}', '${rows[0]?.[0] || 'col'}', key)` },
+          { code: `SUMLOOKUP('${tableName}', '${rows[0]?.[0] || 'col'}')` },
         ]}
         fileHint={`<model>-${tableName}.csv`}
       />
@@ -442,7 +437,7 @@ export default function LookupTableEditor() {
       }
     }
     setSelectedTable(name);
-  }, [lookupTableCSVs, setLookupTableCSV]);
+  }, [lookupTableCSVs, setLookupTableCSV, setSelectedTable]);
 
   const confirmDeleteTable = async () => {
     if (!tableToDelete) return;
@@ -461,6 +456,7 @@ export default function LookupTableEditor() {
   if (selectedTable !== null) {
     return (
       <TableGrid
+        key={selectedTable}
         tableName={selectedTable}
         onSaved={() => { refreshTables(); }}
       />
@@ -478,13 +474,35 @@ export default function LookupTableEditor() {
 
       {error && <div style={{ color: 'var(--error-color)', fontSize: 12, padding: '0 14px 8px 14px' }}>{error}</div>}
 
-      {/* Table list */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 14px 14px' }}>
-        {lookupTables.length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 12, paddingTop: 20, textAlign: 'center' }}>
-            No lookup tables yet. Create one using <strong>NEW TABLE</strong> in the sidebar.
+      {/* Table list or Guide */}
+      {lookupTables.length === 0 ? (
+        <div className="parametric-empty-state" style={{ flex: 1 }}>
+          <div className="empty-state-content">
+            <div className="empty-state-icon">
+              <Table2 size={36} />
+            </div>
+            <h2>Lookup Tables Workspace</h2>
+            <p>
+              Manage, edit, and interpolate external experimental data or custom property tables directly in equations.
+            </p>
+            <div className="empty-state-steps">
+              <div className="step-item">
+                <span className="step-num">1</span>
+                <span>Enter a table name and click <strong>Add</strong> in the left sidebar</span>
+              </div>
+              <div className="step-item">
+                <span className="step-num">2</span>
+                <span>Populate rows, edit cells, or import an existing CSV file</span>
+              </div>
+              <div className="step-item">
+                <span className="step-num">3</span>
+                <span>Access data in equations using <strong>LOOKUP</strong>, <strong>INTERPOLATE</strong>, or <strong>TABLEVALUE</strong></span>
+              </div>
+            </div>
           </div>
-        ) : (
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 14px 14px' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ color: 'var(--text-secondary)', textAlign: 'left', borderBottom: '1px solid var(--border-color)' }}>
@@ -519,12 +537,15 @@ export default function LookupTableEditor() {
               ))}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
       <SyntaxFooter
         items={[
-          { code: "LOOKUP('tablename', row, col)" },
-          { code: "INTERPOLATE('tablename', 'xcol', 'ycol', xval)" },
+          { code: "LOOKUP('table', row, col)" },
+          { code: "INTERPOLATE('table', 'xcol', 'ycol', xval)" },
+          { code: "INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', x, y)" },
+          { code: "LOOKUP$ROW('table', 'col', key)" },
+          { code: "SUMLOOKUP('table', 'col')" },
         ]}
         fileHint="<model>-<tablename>.csv"
       />

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import Plot from './PlotlyChart';
 import ThermoDiagramIcon from './ThermoDiagramIcon';
+import { extractArrayColumns } from '../utils/arrayData';
 import { useDiagramStore, DIAGRAM_CONFIGS, PROP_UNITS } from '../stores/diagramStore';
 import { useUIStore } from '../stores/uiStore';
 import { useModelStore } from '../stores/modelStore';
@@ -23,28 +24,10 @@ export default function ThermoDiagramResults() {
   } = useDiagramStore();
 
   const cfg = DIAGRAM_CONFIGS[diagramType];
-  const arrayColumns = useMemo(() => {
-    if (!lastResult?.variables) return new Map<string, number[]>();
-    const cols = new Map<string, { indices: number[]; values: number[] }>();
-    for (const [name, val] of Object.entries(lastResult.variables)) {
-      const match = name.match(/^(.+)\[(\d+)\]$/);
-      if (match) {
-        const base = match[1];
-        const idx = parseInt(match[2]);
-        if (!cols.has(base)) cols.set(base, { indices: [], values: [] });
-        cols.get(base)!.indices.push(idx);
-        cols.get(base)!.values.push(val);
-      }
-    }
-    const result = new Map<string, number[]>();
-    for (const [base, data] of cols) {
-      const sorted = data.indices
-        .map((idx, i) => ({ idx, val: data.values[i] }))
-        .sort((a, b) => a.idx - b.idx);
-      result.set(base, sorted.map((s) => s.val));
-    }
-    return result;
-  }, [lastResult]);
+  const arrayColumns = useMemo(
+    () => extractArrayColumns(lastResult?.variables),
+    [lastResult]
+  );
   const traces = useMemo(() => {
     if (!satData) return [];
     const t: Plotly.Data[] = [];
@@ -240,7 +223,7 @@ export default function ThermoDiagramResults() {
           )}
         </div>
       </div>
-      <div className="parametric-results-content" style={{ justifyContent: 'center', alignItems: 'center', padding: '16px' }}>
+      <div className="parametric-results-content thermo-diagram" style={{ justifyContent: 'center', alignItems: 'center', padding: '16px' }}>
         <div className="parametric-plot-box" style={{ maxWidth: 880, height: '100%', minHeight: 380 }}>
           <Plot
             data={traces}

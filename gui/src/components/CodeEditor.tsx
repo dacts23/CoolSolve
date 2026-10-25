@@ -1,14 +1,17 @@
 import { useCallback, useRef, useEffect, useState } from 'react';
-import { X, Plus, FileCode, ChevronLeft, ChevronRight } from 'lucide-react';
+import ConfirmModal from './ConfirmModal';
+import { X, Plus, FileCode, ChevronLeft, ChevronRight, Play, Bug, Square, Zap } from 'lucide-react';
 import type * as Monaco from 'monaco-editor';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { registerEESLanguage, EES_LANGUAGE_ID } from '../languages/ees';
 import { defineEditorThemes, resolveEditorTheme, getActiveEditorBg } from '../languages/editorThemes';
-import { useModelStore } from '../stores/modelStore';
+import { useModelStore, tabHasResults } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { fontCss, DEFAULT_EDITOR_FONT_SIZE } from '../utils/appearance';
 import { api } from '../api/client';
 import { setEditorInstance, toggleBraceComment, toggleQuoteComment } from './editorUtils';
+import { useSolveRunner } from '../utils/useSolveRunner';
+import { useParametricStore } from '../stores/parametricStore';
 
 let languageRegistered = false;
 
@@ -43,6 +46,41 @@ export default function CodeEditor() {
   const renameTab = useModelStore((s) => s.renameTab);
   const reorderTabs = useModelStore((s) => s.reorderTabs);
   const newTab = useModelStore((s) => s.newTab);
+  const { handleSolve, handleStopSolve, solving, tryHarderAvailable, deepSearchRunning } = useSolveRunner();
+  const parametricRunning = useParametricStore((s) => s.running);
+
+  const [tabToClose, setTabToClose] = useState<{ id: string; name: string } | null>(null);
+  const [othersToClose, setOthersToClose] = useState<string | null>(null);
+  const [tabToSwitchTo, setTabToSwitchTo] = useState<string | null>(null);
+
+  // Switching files keeps each file's results, but the table grid's unsaved
+  // cell edits live only on screen: warn before dropping them.
+  const requestSwitchTab = useCallback((id: string) => {
+    if (id === activeTabId) return;
+    if (useModelStore.getState().lookupTableDirty) {
+      setTabToSwitchTo(id);
+    } else {
+      switchTab(id);
+    }
+  }, [activeTabId, switchTab]);
+
+  const requestCloseTab = useCallback((id: string) => {
+    const tab = openTabs.find((t) => t.id === id);
+    if (tab && (tab.dirty || tabHasResults(tab))) {
+      setTabToClose({ id: tab.id, name: tab.name });
+    } else {
+      closeTab(id);
+    }
+  }, [openTabs, closeTab]);
+
+  const requestCloseOtherTabs = useCallback((id: string) => {
+    const othersAtRisk = openTabs.some((t) => t.id !== id && (t.dirty || tabHasResults(t)));
+    if (othersAtRisk) {
+      setOthersToClose(id);
+    } else {
+      closeOtherTabs(id);
+    }
+  }, [openTabs, closeOtherTabs]);
 
   const tabsRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -77,6 +115,7 @@ export default function CodeEditor() {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const parseTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const parseSeqRef = useRef(0);
 
   const activeEditorBg = getActiveEditorBg(editorTheme, theme, forceAppBg, palette);
   const activeMonacoTheme = resolveEditorTheme(editorTheme, theme, forceAppBg, palette);
@@ -213,12 +252,16 @@ export default function CodeEditor() {
           return;
         }
         try {
+          const seq = ++parseSeqRef.current;
           const result = await api.parse(code);
+          // Ignore answers that arrive after a newer parse was requested.
+          if (seq !== parseSeqRef.current) return;
           setParseResult(
             result.errors,
             result.equationCount,
             result.variableCount || 0,
-            result.isSquare ?? true
+            result.isSquare ?? true,
+            result.diagnostics || []
           );
 
           // Store parsed variable info (units, imposed flags) for the VariableTable
@@ -271,33 +314,26 @@ export default function CodeEditor() {
   // Clear or re-apply markers when showUnderlines changes
   useEffect(() => {
     const monaco = monacoRef.current || window.monaco;
-    if (editorRef.current && monaco) {
-      const model = editorRef.current.getModel();
-      if (model && !showUnderlines) {
-        monaco.editor.setModelMarkers(model, 'coolsolve', []);
-      } else if (eescode) {
-        doParse(eescode);
-      }
+    const model = editorRef.current?.getModel();
+    if (!monaco || !model) return;
+    if (!showUnderlines) {
+      monaco.editor.setModelMarkers(model, 'coolsolve', []);
+    } else {
+      doParse(useModelStore.getState().eescode);
     }
-  }, [showUnderlines, eescode, doParse]);
+  }, [showUnderlines, doParse]);
 
   // Monaco onChange handler — user typing
   const handleChange = useCallback(
     (value: string | undefined) => {
-      const code = value || '';
-      setEescode(code);
-      doParse(code);
+      setEescode(value || '');
     },
-    [setEescode, doParse]
+    [setEescode]
   );
 
-  // Re-parse when eescode changes externally (file load, examples, back button, etc.)
-  // This also handles the initial mount.  The debounce in doParse prevents double-work
-  // when the change originates from handleChange (same code → same debounced timer).
+  // Parse on every code change: typing, file load, examples, back button, etc.
   useEffect(() => {
-    if (eescode) {
-      doParse(eescode);
-    }
+    doParse(eescode);
   }, [eescode, doParse]);
 
   const commitRename = (id: string, name: string) => {
@@ -324,7 +360,7 @@ export default function CodeEditor() {
               <div
                 key={tab.id}
                 className={`editor-tab ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''}`}
-                onClick={() => switchTab(tab.id)}
+                onClick={() => requestSwitchTab(tab.id)}
                 draggable={!isEditing}
                 onDragStart={(e) => {
                   setDraggedIndex(index);
@@ -378,7 +414,7 @@ export default function CodeEditor() {
                   className="tab-close-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    closeTab(tab.id);
+                    requestCloseTab(tab.id);
                   }}
                   title="Close Tab"
                 >
@@ -417,6 +453,49 @@ export default function CodeEditor() {
             </button>
           </div>
         )}
+
+        <div className="editor-tab-actions">
+          {solving && (
+            <button
+              className="toolbar-btn danger icon-only"
+              onClick={handleStopSolve}
+              title="Stop calculation (Esc)"
+              aria-label="Stop calculation"
+            >
+              <Square size={12} />
+            </button>
+          )}
+          <button
+            className={`toolbar-btn primary icon-only${tryHarderAvailable ? ' try-harder' : ''}`}
+            onClick={() => handleSolve(false, tryHarderAvailable)}
+            disabled={solving || parametricRunning || !eescode.trim()}
+            title={
+              solving
+                ? (deepSearchRunning ? 'Deep search in progress…' : 'Solving…')
+                : tryHarderAvailable
+                  ? 'Try Harder: re-run with Deep Search pipeline (F2)'
+                  : 'Solve equations (F2 / Ctrl+Enter)'
+            }
+            aria-label="Solve"
+          >
+            {solving ? (
+              <span className="spinner" />
+            ) : tryHarderAvailable ? (
+              <Zap size={13} fill="currentColor" />
+            ) : (
+              <Play size={13} fill="currentColor" />
+            )}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => handleSolve(true, false)}
+            disabled={solving || parametricRunning || !eescode.trim()}
+            title="Debug solve: trace blocks, residuals & diagnostics (Ctrl+Shift+Enter)"
+            aria-label="Debug Solve"
+          >
+            <Bug size={14} />
+          </button>
+        </div>
       </div>
 
       {/* Right-click Tab Context Menu */}
@@ -440,7 +519,7 @@ export default function CodeEditor() {
           </button>
           <button
             onClick={() => {
-              closeTab(contextMenu.tabId);
+              requestCloseTab(contextMenu.tabId);
               setContextMenu(null);
             }}
           >
@@ -448,13 +527,51 @@ export default function CodeEditor() {
           </button>
           <button
             onClick={() => {
-              closeOtherTabs(contextMenu.tabId);
+              requestCloseOtherTabs(contextMenu.tabId);
               setContextMenu(null);
             }}
           >
             Close Others
           </button>
         </div>
+      )}
+
+      {tabToClose && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message={`"${tabToClose.name}" has unsaved changes or run results. Closing it will discard them.`}
+          confirmLabel="Discard & Close"
+          onConfirm={() => {
+            closeTab(tabToClose.id);
+            setTabToClose(null);
+          }}
+          onCancel={() => setTabToClose(null)}
+        />
+      )}
+      {othersToClose && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message="Other open tabs have unsaved changes or run results. Closing them will discard them."
+          confirmLabel="Discard Others"
+          onConfirm={() => {
+            closeOtherTabs(othersToClose);
+            setOthersToClose(null);
+          }}
+          onCancel={() => setOthersToClose(null)}
+        />
+      )}
+      {tabToSwitchTo && (
+        <ConfirmModal
+          title="Discard Unsaved Table Edits?"
+          message="The lookup table has unsaved cell edits. Switching files will discard them — save the table first to keep them."
+          confirmLabel="Discard & Switch"
+          onConfirm={() => {
+            useModelStore.getState().setLookupTableDirty(false);
+            switchTab(tabToSwitchTo);
+            setTabToSwitchTo(null);
+          }}
+          onCancel={() => setTabToSwitchTo(null)}
+        />
       )}
       <div className="editor-body" ref={editorBodyRef}>
         <Editor
@@ -472,6 +589,12 @@ export default function CodeEditor() {
             fontLigatures: true,
             lineHeight: Math.round(editorFontSize * 1.55),
             padding: { top: 8, bottom: 8 },
+            fixedOverflowWidgets: true,
+            find: {
+              addExtraSpaceOnTop: true,
+              autoFindInSelection: 'never',
+              seedSearchStringFromSelection: 'always',
+            },
             minimap: {
               enabled: minimap,
               renderCharacters: false,

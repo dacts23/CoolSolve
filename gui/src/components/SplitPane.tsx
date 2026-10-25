@@ -1,4 +1,5 @@
-import { useRef, useCallback, useEffect, useState } from 'react';
+import { useRef, useCallback, useState } from 'react';
+import { startResizeDrag } from '../utils/drag.ts';
 
 interface SplitPaneProps {
   direction: 'horizontal' | 'vertical';
@@ -23,57 +24,28 @@ export default function SplitPane({
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(defaultSize);
-  const dragging = useRef(false);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
-    document.body.style.userSelect = 'none';
-    document.body.classList.add('is-resizing-pane');
-  }, [direction]);
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const horizontal = direction === 'horizontal';
+      startResizeDrag(horizontal ? 'col-resize' : 'row-resize', (ev) => {
+        const offset = horizontal ? ev.clientX - rect.left : ev.clientY - rect.top;
+        const containerPx = horizontal ? rect.width : rect.height;
+        let newSize = (offset / containerPx) * 100;
 
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragging.current || !containerRef.current) return;
-
-      const rect = containerRef.current.getBoundingClientRect();
-      let newSize: number;
-
-      if (direction === 'horizontal') {
-        const offset = e.clientX - rect.left;
-        newSize = (offset / rect.width) * 100;
-      } else {
-        const offset = e.clientY - rect.top;
-        newSize = (offset / rect.height) * 100;
-      }
-
-      // Apply min/max constraints
-      const containerPx = direction === 'horizontal' ? rect.width : rect.height;
-      const minPct = (minSize / containerPx) * 100;
-      const maxPct = maxSize ? (maxSize / containerPx) * 100 : Math.max(minPct, ((containerPx - minSize) / containerPx) * 100);
-
-      newSize = Math.max(minPct, Math.min(maxPct, newSize));
-      setSize(newSize);
-      onResize?.(newSize);
-    };
-
-    const handleMouseUp = () => {
-      if (dragging.current) {
-        dragging.current = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        document.body.classList.remove('is-resizing-pane');
-      }
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [direction, minSize, maxSize, onResize]);
+        // Apply min/max constraints
+        const minPct = (minSize / containerPx) * 100;
+        const maxPct = maxSize ? (maxSize / containerPx) * 100 : Math.max(minPct, ((containerPx - minSize) / containerPx) * 100);
+        newSize = Math.max(minPct, Math.min(maxPct, newSize));
+        setSize(newSize);
+        onResize?.(newSize);
+      });
+    },
+    [direction, minSize, maxSize, onResize]
+  );
 
   const isHorizontal = direction === 'horizontal';
   const isFirstCollapsed = collapsed === 'first' || collapsed === 'both';

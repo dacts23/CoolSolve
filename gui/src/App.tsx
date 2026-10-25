@@ -1,17 +1,18 @@
 import { useEffect, useState, useMemo } from 'react';
-import { PanelRight, PanelBottom, ChevronDown } from 'lucide-react';
+import { PanelRight, PanelBottom, ChevronDown, X } from 'lucide-react';
 import Toolbar from './components/Toolbar';
 import CodeEditor from './components/CodeEditor';
+import SolutionView from './components/SolutionView';
 import VariableTable from './components/VariableTable';
 import ArrayTable from './components/ArrayTable';
 import ConfigEditor from './components/ConfigEditor';
 import DebugViewer from './components/DebugViewer';
 import ThermoDiagramSetup from './components/ThermoDiagramSetup';
 import ThermoDiagramResults from './components/ThermoDiagramResults';
-import Console from './components/Console';
+import Console, { DiagnosticsView, useActiveDiagnostics } from './components/Console';
 import LookupTableEditor from './components/LookupTableEditor';
 import IntegralTable from './components/IntegralTable';
-import UsageStats from './components/UsageStats';
+import UsageStats, { STATS_LOCAL_ONLY } from './components/UsageStats';
 import SplitPane from './components/SplitPane';
 import ActivityBar from './components/ActivityBar';
 import ParametricSetup from './components/ParametricSetup';
@@ -19,17 +20,20 @@ import ParametricResults from './components/ParametricResults';
 import LookupTablesSetup from './components/LookupTablesSetup';
 import IntegralSetup from './components/IntegralSetup';
 import { AppModals } from './components/AppModals';
+import { GlobalTooltip } from './components/Tooltip';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
 import { api } from './api/client';
 import { enableTabSession, getTabSessionId } from './api/session';
 import { openLibraryModel } from './utils/library';
+import { startResizeDrag } from './utils/drag';
 import { showSessionModel } from './utils/sessionModel';
 import { applyAppearance } from './utils/appearance';
+import { toErrMsg } from './utils/errors';
 import './App.css';
 
-// Hidden utility page (solve usage statistics) — reachable at /stats only,
-// deliberately not linked from anywhere in the UI.
+// Hidden utility page (solve usage statistics) — reachable at /stats and the
+// Help menu. Local-only: it lists every client's IPs and model names.
 const STATS_PATH = '/stats';
 
 // An open tab tells the server that its session is in use at this interval: the server drops
@@ -37,7 +41,7 @@ const STATS_PATH = '/stats';
 const KEEPALIVE_INTERVAL_MS = 15 * 60 * 1000;
 
 export default function App() {
-  if (window.location.pathname === STATS_PATH) {
+  if (window.location.pathname === STATS_PATH && STATS_LOCAL_ONLY) {
     return <UsageStats />;
   }
   return <MainApp />;
@@ -53,6 +57,10 @@ function MainApp() {
   const rightTab = useUIStore((s) => s.rightTab);
   const setRightTab = useUIStore((s) => s.setRightTab);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const bottomTab = useUIStore((s) => s.bottomTab);
+  const setBottomTab = useUIStore((s) => s.setBottomTab);
+  const debugFile = useUIStore((s) => s.debugFile);
+  const closeDebugFile = useUIStore((s) => s.closeDebugFile);
   const bottomPanelOpen = useUIStore((s) => s.bottomPanelOpen);
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel);
   const consolePosition = useUIStore((s) => s.consolePosition);
@@ -66,6 +74,7 @@ function MainApp() {
   const parseErrors = useModelStore((s) => s.parseErrors);
   const lastResult = useModelStore((s) => s.lastResult);
   const solving = useModelStore((s) => s.solving);
+  const diagnostics = useActiveDiagnostics();
 
   const [ready, setReady] = useState(false);
 
@@ -110,8 +119,8 @@ function MainApp() {
 
   // Apply theme & modern palette
   useEffect(() => {
-    applyAppearance(palette, accent);
-  }, [palette, accent]);
+    applyAppearance(palette, accent, theme);
+  }, [palette, accent, theme]);
 
   // Prevent default browser context menu and accidental text selection globally
   useEffect(() => {
@@ -145,6 +154,61 @@ function MainApp() {
     };
   }, []);
 
+  // Prevent accidental file drag-and-drop navigation and safely open dropped model files (<= 10 MB)
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) {
+        e.preventDefault();
+      }
+    };
+
+    const onDrop = async (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes('Files')) return;
+      e.preventDefault();
+      const files = e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+
+      const file = files[0];
+      if (file.size > 10 * 1024 * 1024) {
+        useModelStore.getState().addConsoleLine('>>> ERROR: Dropped file exceeds 10 MB limit');
+        return;
+      }
+
+      try {
+        if (file.name.toLowerCase().endsWith('.zip')) {
+          const formData = new FormData();
+          formData.append('file', file);
+          const res = await api.uploadFiles(formData);
+          if (res.success) {
+            await showSessionModel();
+            useModelStore.getState().setCanGoBack(true);
+            useUIStore.getState().setActivityMode('code');
+            useModelStore.getState().addConsoleLine(`>>> Opened bundle: ${res.files.join(', ')}`);
+          }
+        } else if (/\.(eescode|ees|txt|cool)$/i.test(file.name)) {
+          const text = await file.text();
+          const stem = file.name.replace(/\.[^.]+$/, '') || 'model';
+          const res = await api.newModel();
+          await api.setModelName(stem);
+          await api.putEescode(text);
+          useModelStore.getState().loadFile(file.name, text, '', '', '', stem, '');
+          useModelStore.getState().setCanGoBack(res.hadContent);
+          useUIStore.getState().setActivityMode('code');
+          useModelStore.getState().addConsoleLine(`>>> Opened file: ${file.name}`);
+        }
+      } catch (err: unknown) {
+        useModelStore.getState().addConsoleLine(`>>> ERROR loading dropped file: ${toErrMsg(err)}`);
+      }
+    };
+
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, []);
+
   if (!ready) {
     return (
       <div className="loading-splash" data-theme={theme}>
@@ -156,15 +220,66 @@ function MainApp() {
     );
   }
 
-  const consoleHeader = (
-    <div className="tab-bar bottom-panel-header" style={{ justifyContent: 'space-between', paddingRight: 6 }}>
+  const bottomTabs = (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: '100%' }}>
       <button
-        className="tab-btn active"
-        onClick={toggleBottomPanel}
-        title="Toggle console output"
+        className={`tab-btn ${bottomPanelOpen && (bottomTab === 'console' || (bottomTab === 'debug' && !debugFile)) ? 'active' : ''}`}
+        onClick={() => setBottomTab('console')}
+        title="Console output and calculation logs"
       >
         Console
       </button>
+      <button
+        className={`tab-btn ${bottomPanelOpen && bottomTab === 'diagnostics' ? 'active' : ''}`}
+        onClick={() => setBottomTab('diagnostics')}
+        title="Compiler diagnostics, warnings & errors"
+        style={{ gap: 5 }}
+      >
+        <span>Warnings</span>
+        {diagnostics.length > 0 && (
+          <span
+            style={{
+              fontSize: 10,
+              padding: '0 5px',
+              borderRadius: 8,
+              background: diagnostics.some((d) => d.severity === 'Error') ? 'var(--error-color, #f87171)' : '#fbbf24',
+              color: '#111',
+              fontWeight: 700,
+              lineHeight: '15px',
+            }}
+          >
+            {diagnostics.length}
+          </span>
+        )}
+      </button>
+      {debugFile && (
+        <button
+          className={`tab-btn ${bottomPanelOpen && bottomTab === 'debug' ? 'active' : ''}`}
+          onClick={() => setBottomTab('debug')}
+          title={debugFile.name ? `Solver debug trace: ${debugFile.name}` : 'Solver debug trace'}
+          style={{ gap: 6, paddingRight: 6 }}
+        >
+          <span>Debug</span>
+          <span
+            className="editor-tab-close"
+            role="button"
+            tabIndex={0}
+            title="Close Debug tab"
+            onClick={(e) => {
+              e.stopPropagation();
+              closeDebugFile();
+            }}
+          >
+            <X size={12} />
+          </span>
+        </button>
+      )}
+    </div>
+  );
+
+  const consoleHeader = (
+    <div className="tab-bar bottom-panel-header" style={{ justifyContent: 'space-between', paddingRight: 6 }}>
+      {bottomTabs}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <button
           className="icon-btn small"
@@ -195,7 +310,17 @@ function MainApp() {
   const consoleView = (
     <div className="bottom-panel" style={{ height: '100%', minHeight: 0 }}>
       {consoleHeader}
-      <Console />
+      {bottomTab === 'debug' && debugFile ? (
+        debugFile.loading ? (
+          <div className="debug-loading"><span className="spinner" /></div>
+        ) : (
+          <pre className="debug-pre">{debugFile.content}</pre>
+        )
+      ) : bottomTab === 'diagnostics' ? (
+        <DiagnosticsView />
+      ) : (
+        <Console />
+      )}
     </div>
   );
 
@@ -203,31 +328,43 @@ function MainApp() {
     <div className="right-panel" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div className="tab-bar">
         <button
-          className={`tab-btn ${rightTab === 'variables' ? 'active' : ''}`}
-          onClick={() => setRightTab('variables')}
+          className={`tab-btn ${rightTab === 'solution' ? 'active' : ''}`}
+          onClick={() => setRightTab('solution')}
+          title="Equations, calculated values & solution details"
         >
           Solution
         </button>
         <button
+          className={`tab-btn ${rightTab === 'variables' ? 'active' : ''}`}
+          onClick={() => setRightTab('variables')}
+          title="Variable table: units, initial guesses, min/max limits"
+        >
+          Variables
+        </button>
+        <button
           className={`tab-btn ${rightTab === 'arrays' ? 'active' : ''}`}
           onClick={() => setRightTab('arrays')}
+          title="Array tables and indexed variables"
         >
           Arrays
         </button>
         <button
           className={`tab-btn ${rightTab === 'debug' ? 'active' : ''}`}
           onClick={() => setRightTab('debug')}
+          title="Tarjan block decomposition, residuals & solver trace"
         >
           Residuals
         </button>
         <button
           className={`tab-btn ${rightTab === 'config' ? 'active' : ''}`}
           onClick={() => setRightTab('config')}
+          title="Solver pipeline configuration & convergence tolerances"
         >
           Config
         </button>
       </div>
       <div className="tab-content">
+        {rightTab === 'solution' && <SolutionView />}
         {rightTab === 'variables' && <VariableTable />}
         {rightTab === 'arrays' && <ArrayTable />}
         {rightTab === 'config' && <ConfigEditor />}
@@ -272,22 +409,9 @@ function MainApp() {
     e.preventDefault();
     const startX = e.clientX;
     const startW = leftPanelWidth;
-    const onMove = (ev: MouseEvent) => {
-      const newW = Math.max(180, Math.min(420, startW + (ev.clientX - startX)));
-      setLeftPanelWidth(newW);
-    };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.body.classList.remove('is-resizing-pane');
-    };
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    document.body.classList.add('is-resizing-pane');
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    startResizeDrag('col-resize', (ev) => {
+      setLeftPanelWidth(Math.max(180, Math.min(420, startW + (ev.clientX - startX))));
+    });
   };
 
   const topWorkspace = (
@@ -338,7 +462,7 @@ function MainApp() {
               </div>
               {!bottomPanelOpen && (
                 <div className="tab-bar bottom-panel-header collapsed-bottom-bar">
-                  <button className="tab-btn" onClick={toggleBottomPanel}>Console</button>
+                  {bottomTabs}
                 </div>
               )}
             </div>
@@ -379,15 +503,21 @@ function MainApp() {
               </span>
             </>
           )}
-          {parseErrors.length > 0 && (
+          {diagnostics.length > 0 && (
             <>
               <span className="status-sep">·</span>
               <span
-                className="status-err-text"
-                style={{ cursor: 'help' }}
-                title={parseErrors.map((e) => `Line ${e.line}: ${e.message}`).join('\n')}
+                className={parseErrors.length > 0 ? 'status-err-text' : 'status-warn-text'}
+                style={{ cursor: 'pointer' }}
+                onClick={() => {
+                  useUIStore.getState().setBottomPanelOpen(true);
+                  setBottomTab('diagnostics');
+                }}
+                title={diagnostics.map((d) => `[${d.code}]${d.line ? ` Line ${d.line}:` : ''} ${d.message}`).join('\n')}
               >
-                Line {parseErrors[0].line}: {parseErrors[0].message}
+                {parseErrors.length > 0
+                  ? `Line ${parseErrors[0].line}: ${parseErrors[0].message}`
+                  : `${diagnostics.length} warning${diagnostics.length === 1 ? '' : 's'}`}
               </span>
             </>
           )}
@@ -405,6 +535,7 @@ function MainApp() {
       </footer>
 
       <AppModals />
+      <GlobalTooltip />
     </div>
   );
 }

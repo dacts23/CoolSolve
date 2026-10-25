@@ -1,0 +1,48 @@
+"Integral panel test model
+
+Two states with closed-form solutions, integrated over tau = 0..6 s.
+Made to exercise the Integral panel: the trajectory table and its plot, the
+Y-variable selector, Export CSV, and the Integrator settings in the left
+sidebar (Method, Max steps, Fixed step, tolerances, Richardson, Output
+interval).
+
+Exact answers at the end of the interval (tau_end = 6):
+  y       = exp(-6)                = 0.0024787522
+  T       = 20 + 80*exp(-12)       = 20.00493979
+  y_at_2  = exp(-2)                = 0.1353352832
+
+y_error / T_error show the integration error directly in the Variables panel:
+they must stay near zero with RK4 (default) and drop further with Richardson.
+Switch Method to EulerExplicit and both errors grow - that is the quickest way
+to see that the settings in the sidebar really reach the solver. RK45 with a
+tight Rel. tolerance shows adaptive stepping (watch the Rejected counter).
+
+Note: variable names are not case-sensitive, so the integration variable is
+called tau - a state named t or T would collide with it.
+"
+
+$UnitSystem SI C Pa J mass deg
+
+"--- Exponential decay:  dy/dtau = -k*y,  y(0) = 1 ---"
+y = y_0 + INTEGRAL(dy_dtau, tau, 0, 6)
+dy_dtau = -k * y
+y_0 = 1
+k = 1
+
+"--- Newton cooling:  dT/dtau = -h*(T - T_amb),  T(0) = 100 C ---"
+T = T_0 + INTEGRAL(dT_dtau, tau, 0, 6)
+dT_dtau = -h * (T - T_amb)
+T_0 = 100
+T_amb = 20
+h = 2
+
+"--- Closed-form solutions: the integration error must stay near zero ---"
+tau_end = 6
+y_exact = exp(-k * tau_end)
+y_error = y - y_exact
+T_exact = T_amb + (T_0 - T_amb) * exp(-h * tau_end)
+T_error = T - T_exact
+
+"--- Trajectory columns: first name must be the integration variable.
+     :0.25 = record one row every 0.25 s (25 rows over tau = 0..6) ---"
+$IntegralTable tau:0.25 y T dy_dtau dT_dtau

@@ -1,10 +1,5 @@
 // API types matching the CoolSolve REST API responses
 
-export interface HealthResponse {
-  status: string;
-  coolpropReady: boolean;
-}
-
 export interface ParseError {
   line: number;
   column: number;
@@ -83,17 +78,6 @@ export interface SolveResponse {
   // model is a dynamic/DAE solve (see IntegralTableData).
   integralTable?: IntegralTableData;
   integralCsvName?: string;
-}
-
-export interface SolvedVariable {
-  name: string;
-  value: number | string;
-  isArray?: boolean;
-  isString?: boolean;
-}
-
-export interface VariablesResponse {
-  variables: SolvedVariable[];
 }
 
 export interface FileOpenResponse {
@@ -194,15 +178,6 @@ export interface SSEDoneEvent {
 export type SSEEvent = SSEBlockEvent | SSEProgressEvent | SSEDoneEvent;
 
 // Debug output
-export interface DebugFile {
-  name: string;
-  size: number;
-}
-
-export interface DebugFilesResponse {
-  files: DebugFile[];
-}
-
 // Inferred variables (thermodynamic property inference)
 export interface InferredVariable {
   name: string;

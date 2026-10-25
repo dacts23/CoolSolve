@@ -11,21 +11,32 @@ export default function LookupTablesSetup() {
   const removeLookupTable = useModelStore((s) => s.removeLookupTable);
   const selectedLookupTable = useModelStore((s) => s.selectedLookupTable);
   const setSelectedLookupTable = useModelStore((s) => s.setSelectedLookupTable);
+  const lookupTableDirty = useModelStore((s) => s.lookupTableDirty);
 
   const [newTableName, setNewTableName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tableToDelete, setTableToDelete] = useState<string | null>(null);
+  const [tableToSwitch, setTableToSwitch] = useState<string | null>(null);
   useEffect(() => {
     api.getTables()
       .then((res) => {
         setLookupTables(res.tables);
-        if (res.tables.length > 0 && !selectedLookupTable) {
+        if (res.tables.length > 0 && !useModelStore.getState().selectedLookupTable) {
           setSelectedLookupTable(res.tables[0].name);
         }
       })
       .catch(() => {});
-  }, [setLookupTables, selectedLookupTable, setSelectedLookupTable]);
+  }, [setLookupTables, setSelectedLookupTable]);
+
+  // Switching tables drops the unsaved cell edits of the open grid: confirm first.
+  const selectTable = (name: string) => {
+    if (lookupTableDirty && name !== selectedLookupTable) {
+      setTableToSwitch(name);
+    } else {
+      setSelectedLookupTable(name);
+    }
+  };
 
   const handleCreateTable = async () => {
     const name = newTableName.trim();
@@ -112,7 +123,7 @@ export default function LookupTablesSetup() {
                 return (
                   <div
                     key={tbl.name}
-                    onClick={() => setSelectedLookupTable(tbl.name)}
+                    onClick={() => selectTable(tbl.name)}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -155,6 +166,18 @@ export default function LookupTablesSetup() {
           confirmLabel="Delete Table"
           onConfirm={confirmDeleteTable}
           onCancel={() => setTableToDelete(null)}
+        />
+      )}
+      {tableToSwitch && (
+        <ConfirmModal
+          title="Discard Unsaved Table Edits?"
+          message={`"${selectedLookupTable}" has unsaved cell edits. Switching tables will discard them.`}
+          confirmLabel="Discard & Switch"
+          onConfirm={() => {
+            setSelectedLookupTable(tableToSwitch);
+            setTableToSwitch(null);
+          }}
+          onCancel={() => setTableToSwitch(null)}
         />
       )}
     </div>

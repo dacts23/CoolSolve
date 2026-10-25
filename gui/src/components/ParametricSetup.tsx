@@ -1,8 +1,7 @@
 import { useState, useMemo } from 'react';
 import ConfirmModal from './ConfirmModal';
-import { Play, Square, LineChart, Trash2 } from 'lucide-react';
+import { Play, Square, LineChart, Trash2, Download } from 'lucide-react';
 import Select from './Select';
-import ExportCsvIcon from './ExportCsvIcon';
 import { useModelStore } from '../stores/modelStore';
 import { useParametricStore, fmt } from '../stores/parametricStore';
 import { exportParametricStudyToCsv } from '../utils/csv';
@@ -105,6 +104,7 @@ export default function ParametricSetup() {
   const parsedVariables = useModelStore((s) => s.parsedVariables);
   const parametricStudies = useModelStore((s) => s.parametricStudies);
   const removeParametricStudy = useModelStore((s) => s.removeParametricStudy);
+  const solving = useModelStore((s) => s.solving);
   const [studyToDelete, setStudyToDelete] = useState<{ id: string; name: string } | null>(null);
 
   const confirmDeleteStudy = () => {
@@ -117,9 +117,10 @@ export default function ParametricSetup() {
     var1Name, setVar1Name, var1Min, setVar1Min, var1Max, setVar1Max, var1Steps, setVar1Steps,
     var2Name, setVar2Name, var2Min, setVar2Min, var2Max, setVar2Max, var2Steps, setVar2Steps,
     timeout, setTimeoutVal, updateGuesses, setUpdateGuesses,
-    running, progress, error, activeStudyId,
+    running, progress, error,
     runStudy, stopStudy, loadStudy,
   } = useParametricStore();
+  const activeStudyId = useModelStore((s) => s.activeStudyId);
 
   const imposedVars = useMemo(
     () => parsedVariables.filter((v) => v.isImposed),
@@ -198,7 +199,7 @@ export default function ParametricSetup() {
             <div className="parametric-actions-bar">
               <button
                 className="parametric-run-btn"
-                disabled={running || !var1Name}
+                disabled={running || solving || !var1Name}
                 onClick={runStudy}
               >
                 {running ? (
@@ -264,7 +265,7 @@ export default function ParametricSetup() {
                       }}
                       title="Export study as CSV"
                     >
-                      <ExportCsvIcon size={13} />
+                      <Download size={13} />
                     </button>
                     <button
                       className="study-delete-btn"

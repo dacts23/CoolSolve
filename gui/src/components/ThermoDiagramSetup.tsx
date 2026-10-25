@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { Play, Loader2 } from 'lucide-react';
 import ThermoDiagramIcon from './ThermoDiagramIcon';
 import Select, { type SelectOption } from './Select';
+import { extractArrayColumns } from '../utils/arrayData';
 import { useDiagramStore, type DiagramType, DIAGRAM_TYPE_OPTIONS } from '../stores/diagramStore';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
@@ -45,28 +46,10 @@ export default function ThermoDiagramSetup() {
       }).catch(() => {});
     }
   }, [lastResult, setInferredVars]);
-  const arrayColumns = useMemo(() => {
-    if (!lastResult?.variables) return new Map<string, number[]>();
-    const cols = new Map<string, { indices: number[]; values: number[] }>();
-    for (const [name, val] of Object.entries(lastResult.variables)) {
-      const match = name.match(/^(.+)\[(\d+)\]$/);
-      if (match) {
-        const base = match[1];
-        const idx = parseInt(match[2]);
-        if (!cols.has(base)) cols.set(base, { indices: [], values: [] });
-        cols.get(base)!.indices.push(idx);
-        cols.get(base)!.values.push(val);
-      }
-    }
-    const result = new Map<string, number[]>();
-    for (const [base, data] of cols) {
-      const sorted = data.indices
-        .map((idx, i) => ({ idx, val: data.values[i] }))
-        .sort((a, b) => a.idx - b.idx);
-      result.set(base, sorted.map((s) => s.val));
-    }
-    return result;
-  }, [lastResult]);
+  const arrayColumns = useMemo(
+    () => extractArrayColumns(lastResult?.variables),
+    [lastResult]
+  );
 
   const arrayColOptions = useMemo(() => {
     return [...arrayColumns.keys()].sort().map((base) => ({

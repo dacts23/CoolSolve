@@ -4,6 +4,7 @@ import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
 import SettingsModal from './SettingsModal';
+import UsageStats from './UsageStats';
 import { insertAtCursor } from './editorUtils';
 import { openLibraryModel, LIBRARY_DASHBOARD_URL, libraryModelPageUrl } from '../utils/library';
 import type { LibraryMenuResponse, LibraryMenuCategory, LibraryMenuModel } from '../api/types';
@@ -26,6 +27,10 @@ const THERMO_PROPERTIES = [
   { fn: 'surfacetension', lhs: 'sigma', desc: 'Surface tension [N/m] (two-phase)' },
   { fn: 'T_sat', lhs: 'T_sat', desc: 'Saturation temperature at given P' },
   { fn: 'P_sat', lhs: 'P_sat', desc: 'Saturation pressure at given T' },
+  { fn: 'humrat', lhs: 'omega', desc: 'Humidity ratio [kg/kg_da] (Air_ha moist air)' },
+  { fn: 'relhum', lhs: 'RH', desc: 'Relative humidity [-] (Air_ha moist air)' },
+  { fn: 'wetbulb', lhs: 'T_wb', desc: 'Wet-bulb temperature [°C] (Air_ha moist air)' },
+  { fn: 'dewpoint', lhs: 'T_dp', desc: 'Dew-point temperature [°C] (Air_ha moist air)' },
 ];
 
 const STATE_PAIRS = [
@@ -42,27 +47,35 @@ const DEFAULT_FLUIDS = [
   'Water', 'R134a', 'CO2', 'Air', 'Air_ha', 'Ammonia', 'NH3H2O',
   'Propane', 'R410A', 'R32', 'R1234yf', 'R1234ze', 'R245fa',
   'Nitrogen', 'Oxygen', 'Butane', 'Isobutane',
+  'EG-20%', 'PG-30%', 'LiBr-20%', 'DowQ',
 ];
 
 const MATH_FUNCTIONS = [
+  { label: 'CALL psychprops(T, P, RH : ...)', snippet: 'CALL psychprops(T_1, P_1, RH_1 : T_out, v_1, h_1, s_1, u_1, W_1, R_1, T_wb, T_dp)', desc: 'Moist air psychrometric procedure (computes up to 9 state outputs)' },
+  { label: 'CALL Colebrook(Re, RR : f)', snippet: 'CALL Colebrook(Re, eps_D : f)', desc: 'Darcy friction factor via implicit Colebrook-White correlation' },
+  { label: "H_LIBR('SI', T, X) / X_LIBR / T_LIBR / P_LIBR", snippet: "h_1 = H_LIBR('SI', T_1, x_1)", desc: 'ASHRAE LiBr-H2O absorption solution routines (H_LIBR, X_LIBR, T_LIBR, P_LIBR)' },
   { label: 'convert(from, to)', snippet: "convert('kW', 'W')", desc: 'Unit conversion factor between two compatible units' },
-  { label: 'sqrt(x)', snippet: 'sqrt(x)', desc: 'Square root' },
-  { label: 'exp(x)', snippet: 'exp(x)', desc: 'Exponential e^x' },
-  { label: 'ln(x)', snippet: 'ln(x)', desc: 'Natural logarithm' },
-  { label: 'log10(x)', snippet: 'log10(x)', desc: 'Base-10 logarithm' },
-  { label: 'abs(x)', snippet: 'abs(x)', desc: 'Absolute value' },
-  { label: 'min(a, b)', snippet: 'min(a, b)', desc: 'Minimum of arguments' },
-  { label: 'max(a, b)', snippet: 'max(a, b)', desc: 'Maximum of arguments' },
-  { label: 'sin(x) / cos(x) / tan(x)', snippet: 'sin(theta)', desc: 'Trigonometric functions (respects deg/rad in $UnitSystem)' },
-  { label: 'arcsin(x) / arccos(x) / arctan(x)', snippet: 'arctan(y / x)', desc: 'Inverse trigonometric functions' },
-  { label: 'colebrook(Re, e_D)', snippet: 'f = colebrook(Re, eps_D)', desc: 'Moody friction factor via Colebrook-White correlation' },
+  { label: 'converttemp(from, to, T)', snippet: "T_K = converttemp('C', 'K', T_C)", desc: 'Convert temperature value between C, K, F, and R scales' },
+  { label: 'SUM(expr, i=1, N)', snippet: 'total = SUM(x[i], i=1, N)', desc: 'Indexed summation over array elements or expressions' },
+  { label: 'CALL WARNING(msg$, val)', snippet: "CALL WARNING('Temperature exceeds limit: XXXA1', T_1)", desc: 'Emit non-fatal runtime warning (W001) inside a PROCEDURE' },
+  { label: 'CALL ERROR(msg$, val)', snippet: "CALL ERROR('Invalid pressure: XXXA1', P_1)", desc: 'Halt calculation with a formatted error inside a PROCEDURE' },
+  { label: 'sqrt(x) / exp(x) / ln(x) / log10(x)', snippet: 'sqrt(x)', desc: 'Elementary power, exponential, and logarithmic functions' },
+  { label: 'sin(x) / cos(x) / tan(x) / arctan(x)', snippet: 'sin(theta)', desc: 'Trigonometric functions (degrees inCoolSolve)' },
+  { label: 'min(a, b, ...) / max(a, b, ...) / abs(x)', snippet: 'min(a, b)', desc: 'Extrema and absolute value' },
 ];
 
 const TABLE_INTEGRAL_FUNCTIONS = [
-  { label: 'interpolate(Table, ColY, ColX, ColX=val)', snippet: "y = interpolate('Table1', 'ColY', 'ColX', ColX=x)", desc: '1D linear interpolation on a Lookup Table' },
-  { label: 'lookup(Table, Row, Col)', snippet: "val = lookup('Table1', 1, 'Col1')", desc: 'Read cell at given row and column of a Lookup Table' },
-  { label: 'integral(dydx, x, a, b)', snippet: 'y = y_0 + integral(dydt, t, 0, t_end)', desc: 'Equation-based ODE/DAE integration' },
+  { label: 'interpolate(Table, ColX, ColY, x)', snippet: "y = interpolate('Table1', 'ColX', 'ColY', x)", desc: '1D linear interpolation on a Lookup Table' },
+  { label: 'interpolate2(Table, ColX, ColY, ColZ, x, y)', snippet: "z = interpolate2('Table1', 'ColX', 'ColY', 'ColZ', x, y)", desc: '2D bilinear surface interpolation on a Lookup Table' },
+  { label: 'lookup(Table, Row, Col)', snippet: "val = lookup('Table1', 1, 'Col1')", desc: 'Read numeric cell at given row and column (interpolates non-integer rows)' },
+  { label: 'lookup$(Table, Row, Col)', snippet: "name$ = lookup$('Table1', 1, 'Fluid')", desc: 'Read text/string cell at given row and column' },
+  { label: 'lookup$row(Table, Col, Key)', snippet: "r = lookup$row('Table1', 'Col1', key)", desc: 'Find row index where Col holds string or numeric Key' },
+  { label: 'sumlookup / avglookup / minlookup / maxlookup / stddevlookup', snippet: "s = sumlookup('Table1', 'Col1')", desc: 'Aggregate statistics over a Lookup Table column' },
+  { label: 'nlookuprows(Table) / nlookupcolumns(Table)', snippet: "n = nlookuprows('Table1')", desc: 'Number of rows or columns in a Lookup Table' },
+  { label: 'lookup(Table, Row, Col) = expr', snippet: "lookup('Table1', 1, 'Col1') = y", desc: 'Write solved value back into a Lookup Table cell' },
+  { label: 'integral(dydt, t, t0, tf[, step])', snippet: 'y = y_0 + integral(dydt, t, 0, t_end)', desc: 'Equation-based ODE/DAE dynamic integration' },
   { label: '$IntegralTable directive', snippet: '$IntegralTable t: y, dydt', desc: 'Record trajectory columns during INTEGRAL evaluation' },
+  { label: "integralvalue(t, 'var')", snippet: "y_mid = integralvalue(5.0, 'y')", desc: 'Interpolate a recorded variable from the Integral Table at time t' },
 ];
 
 function FunctionInfoModal({ onClose }: { onClose: () => void }) {
@@ -80,17 +93,19 @@ function FunctionInfoModal({ onClose }: { onClose: () => void }) {
   const preview = useMemo(() => {
     if (category !== 'thermo') return selectedSnippet;
     const sfx = suffix.trim() ? `_${suffix.trim()}` : '';
-    if (prop.fn === 'T_sat') return `T_sat${sfx} = T_sat(${fluid}, P=P${sfx})`;
-    if (prop.fn === 'P_sat') return `P_sat${sfx} = P_sat(${fluid}, T=T${sfx})`;
-    if (prop.fn === 'surfacetension') return `sigma${sfx} = surfacetension(${fluid}, T=T${sfx})`;
-    if (fluid === 'Air_ha') {
-      return `${prop.lhs}${sfx} = ${prop.fn}(Air_ha, T=T${sfx}, P=P${sfx}, R=RH${sfx})`;
+    const fArg = /[-%]/.test(fluid) ? `'${fluid}'` : fluid;
+    if (prop.fn === 'T_sat') return `T_sat${sfx} = T_sat(${fArg}, P=P${sfx})`;
+    if (prop.fn === 'P_sat') return `P_sat${sfx} = P_sat(${fArg}, T=T${sfx})`;
+    if (prop.fn === 'surfacetension') return `sigma${sfx} = surfacetension(${fArg}, T=T${sfx})`;
+    if (fluid === 'Air_ha' || ['humrat', 'relhum', 'wetbulb', 'dewpoint'].includes(prop.fn)) {
+      const third = prop.fn === 'relhum' ? `w=omega${sfx}` : `R=RH${sfx}`;
+      return `${prop.lhs}${sfx} = ${prop.fn}(Air_ha, T=T${sfx}, P=P${sfx}, ${third})`;
     }
     if (fluid === 'NH3H2O') {
       return `${prop.lhs}${sfx} = ${prop.fn}(NH3H2O, T=T${sfx}, P=P${sfx}, x=x${sfx})`;
     }
     const args = pair.inputs.map((inp) => `${inp}=${inp}${sfx}`).join(', ');
-    return `${prop.lhs}${sfx} = ${prop.fn}(${fluid}, ${args})`;
+    return `${prop.lhs}${sfx} = ${prop.fn}(${fArg}, ${args})`;
   }, [category, prop, fluid, pair, suffix, selectedSnippet]);
 
   const handlePaste = () => {
@@ -113,13 +128,25 @@ function FunctionInfoModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="modal-tabs">
-          <button className={`modal-tab ${category === 'thermo' ? 'active' : ''}`} onClick={() => setCategory('thermo')}>
+          <button
+            className={`modal-tab ${category === 'thermo' ? 'active' : ''}`}
+            onClick={() => setCategory('thermo')}
+            title="CoolProp & RefProp thermophysical property functions"
+          >
             Thermophysical Properties
           </button>
-          <button className={`modal-tab ${category === 'math' ? 'active' : ''}`} onClick={() => { setCategory('math'); setSelectedSnippet(MATH_FUNCTIONS[0].snippet); }}>
+          <button
+            className={`modal-tab ${category === 'math' ? 'active' : ''}`}
+            onClick={() => { setCategory('math'); setSelectedSnippet(MATH_FUNCTIONS[0].snippet); }}
+            title="Trigonometric, logarithmic, hyperbolic & engineering math functions"
+          >
             Math &amp; Engineering
           </button>
-          <button className={`modal-tab ${category === 'tables' ? 'active' : ''}`} onClick={() => { setCategory('tables'); setSelectedSnippet(TABLE_INTEGRAL_FUNCTIONS[0].snippet); }}>
+          <button
+            className={`modal-tab ${category === 'tables' ? 'active' : ''}`}
+            onClick={() => { setCategory('tables'); setSelectedSnippet(TABLE_INTEGRAL_FUNCTIONS[0].snippet); }}
+            title="Lookup tables & numerical integration functions"
+          >
             Lookup &amp; Integral
           </button>
         </div>
@@ -558,6 +585,24 @@ export function AppModals() {
       return <LibraryModal onClose={close} />;
     case 'settings':
       return <SettingsModal onClose={close} />;
+    case 'stats':
+      return (
+        <div className="modal-backdrop" onMouseDown={close}>
+          <div
+            className="modal-card modal-lg"
+            style={{ width: 'min(920px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <span>Solve Usage Statistics</span>
+              <button className="icon-btn" onClick={close}><X size={14} /></button>
+            </div>
+            <div className="modal-body" style={{ overflowY: 'auto', padding: 12 }}>
+              <UsageStats />
+            </div>
+          </div>
+        </div>
+      );
     case 'about':
       return <AboutModal onClose={close} />;
     default:

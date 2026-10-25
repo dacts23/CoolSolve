@@ -1,8 +1,7 @@
 import { useMemo, useEffect, useCallback } from 'react';
-import { LineChart, CheckCircle2, AlertCircle } from 'lucide-react';
+import { LineChart, CheckCircle2, AlertCircle, Download } from 'lucide-react';
 import Plot from './PlotlyChart';
 import Select from './Select';
-import ExportCsvIcon from './ExportCsvIcon';
 import { useParametricStore, fmt } from '../stores/parametricStore';
 import { useUIStore } from '../stores/uiStore';
 import { useModelStore } from '../stores/modelStore';
@@ -12,7 +11,6 @@ export default function ParametricResults() {
   const theme = useUIStore((s) => s.theme);
   const modelName = useModelStore((s) => s.modelName);
   const {
-    activeResult,
     plotXVar,
     setPlotXVar,
     plotYVar,
@@ -20,6 +18,8 @@ export default function ParametricResults() {
     plotType,
     setPlotType,
   } = useParametricStore();
+  // Sweep results live with the tab (see modelStore) so switching files keeps them.
+  const activeResult = useModelStore((s) => s.parametricResult);
   const outputVarNames = useMemo(() => {
     if (!activeResult || activeResult.results.length === 0) return [];
     const firstSuccess = activeResult.results.find((r) => r.success && r.variables);
@@ -137,15 +137,21 @@ export default function ParametricResults() {
       const xVals = xAxisVar.values;
       const yVals = yAxisVar.values;
 
+      // Pre-index points by rounded coordinates: O(N) instead of O(N^2)
+      const ptMap = new Map<string, typeof activeResult.results[number]>();
+      for (const r of activeResult.results) {
+        const kx = (r.overrides[xAxisVar.name] ?? 0).toPrecision(8);
+        const ky = (r.overrides[yAxisVar.name] ?? 0).toPrecision(8);
+        ptMap.set(`${kx}:${ky}`, r);
+      }
+
       const z: (number | null)[][] = [];
       for (let j = 0; j < yVals.length; j++) {
         const row: (number | null)[] = [];
+        const ky = (yVals[j] ?? 0).toPrecision(8);
         for (let i = 0; i < xVals.length; i++) {
-          const pt = activeResult.results.find(
-            (r) =>
-              r.overrides[xAxisVar.name] === xVals[i] &&
-              r.overrides[yAxisVar.name] === yVals[j]
-          );
+          const kx = (xVals[i] ?? 0).toPrecision(8);
+          const pt = ptMap.get(`${kx}:${ky}`);
           row.push(pt?.success && pt.variables ? (pt.variables[plotYVar] ?? null) : null);
         }
         z.push(row);
@@ -242,26 +248,32 @@ export default function ParametricResults() {
 
   return (
     <div className="parametric-results-view">
-      <div className="parametric-results-header">
-        <div className="results-summary">
+      <div className="table-title-header">
+        <div className="table-title-display">
+          <h2 className="table-main-title">Parametric Sweep</h2>
           {allConverged ? (
             <CheckCircle2 size={16} className="text-success" />
           ) : (
             <AlertCircle size={16} className="text-warning" />
           )}
-          <span className="results-title">
-            Parametric Sweep Results:
-          </span>
-          <span className="results-badge">
+          <span className="table-meta-badge">
             {activeResult.successCount} of {activeResult.totalPoints} converged
           </span>
-          <span className="results-sweep-names">
-            ({activeResult.sweepVariables.map((s) => s.name).join(' × ')})
+          <span className="integral-meta">
+            · {activeResult.sweepVariables.map((s) => s.name).join(' × ')}
           </span>
         </div>
-
-        <div className="results-controls">
-          <label className="results-ctrl-label">X Variable:</label>
+        <button
+          className="table-btn-pill"
+          onClick={handleExportCsv}
+          title="Export sweep results to CSV"
+        >
+          <Download size={11} /> Export CSV
+        </button>
+      </div>
+      <div className="parametric-results-content">
+        <div className="parametric-plot-controls">
+          <label>X variable:</label>
           <Select
             value={resolvedXVar}
             options={availableXVars}
@@ -269,7 +281,7 @@ export default function ParametricResults() {
             style={{ minWidth: 130 }}
           />
 
-          <label className="results-ctrl-label">Y Variable:</label>
+          <label>Y variable:</label>
           <Select
             value={plotYVar}
             options={outputVarNames}
@@ -279,7 +291,7 @@ export default function ParametricResults() {
 
           {sweepDim === 2 && (
             <>
-              <label className="results-ctrl-label">Type:</label>
+              <label>Type:</label>
               <Select
                 value={plotType}
                 options={[
@@ -292,20 +304,11 @@ export default function ParametricResults() {
             </>
           )}
 
-          <button
-            className="export-csv-btn"
-            onClick={handleExportCsv}
-            title="Export sweep results to CSV"
-            style={{ marginLeft: 6 }}
-          >
-            <ExportCsvIcon size={15} />
-          </button>
         </div>
-      </div>
-      <div className="parametric-results-content">
         {plotData.data.length > 0 && (
           <div className="parametric-plot-wrapper">
-            <div className="parametric-plot-box">
+            <div className="parametric-plot">
+              <div className="parametric-plot-box">
               <Plot
                 data={plotData.data}
                 layout={plotData.layout}
@@ -321,20 +324,22 @@ export default function ParametricResults() {
                 useResizeHandler
                 style={{ width: '100%', height: '100%' }}
               />
+              </div>
             </div>
           </div>
         )}
         <div className="parametric-table-wrapper">
+          <div className="parametric-table-container">
           <table className="variable-table parametric-table">
             <thead>
               <tr>
-                <th style={{ width: 40 }}>#</th>
+                <th className="row-num" style={{ width: 40 }}>#</th>
                 {activeResult.sweepVariables.map((s) => (
                   <th key={s.name} className="sweep-col">{s.name}</th>
                 ))}
                 <th style={{ width: 70 }}>Status</th>
                 {outputVarNames.map((n) => (
-                  <th key={n}>{n}</th>
+                  <th key={n} className="value-cell">{n}</th>
                 ))}
               </tr>
             </thead>
@@ -357,6 +362,7 @@ export default function ParametricResults() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>

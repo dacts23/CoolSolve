@@ -24,7 +24,8 @@ export default function ConfirmModal({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onCancel();
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+        // Enter on a focused button must run that button (e.g. Cancel), not confirm.
         onConfirm();
       }
     };

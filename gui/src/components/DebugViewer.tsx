@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
+import { useUIStore } from '../stores/uiStore';
 import { toErrMsg } from '../utils/errors';
-import { FileText, RefreshCw, ChevronDown, ChevronRight, X, Maximize2, Minimize2 } from 'lucide-react';
+import { FileText, RefreshCw, ChevronDown, ChevronRight, Layers } from 'lucide-react';
 import SplitPane from './SplitPane';
 
 interface DebugFile {
@@ -12,13 +13,16 @@ interface DebugFile {
 
 export default function DebugViewer() {
   const [files, setFiles] = useState<DebugFile[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [content, setContent] = useState('');
-  const [loading, setLoading] = useState(false);
   const [blocksOpen, setBlocksOpen] = useState(true);
   const [filesOpen, setFilesOpen] = useState(true);
-  const [maximized, setMaximized] = useState(false);
   const lastResult = useModelStore((s) => s.lastResult);
+  const eescode = useModelStore((s) => s.eescode);
+  const debugFile = useUIStore((s) => s.debugFile);
+  const openDebugFile = useUIStore((s) => s.openDebugFile);
+
+  // Dynamic (INTEGRAL) models are marched step by step, so the solver reports
+  // no static block decomposition for them - say so instead of promising one.
+  const isDynamic = /\binegral\s*\(/i.test(eescode);
 
   const refresh = useCallback(async () => {
     try {
@@ -34,16 +38,14 @@ export default function DebugViewer() {
   }, [refresh, lastResult]);
 
   const handleSelectFile = useCallback(async (name: string) => {
-    setSelected(name);
-    setLoading(true);
+    openDebugFile(name, '', true);
     try {
       const res = await api.getDebugFile(name);
-      setContent(res.content);
+      openDebugFile(name, res.content, false);
     } catch (err: unknown) {
-      setContent(`Error loading file: ${toErrMsg(err)}`);
+      openDebugFile(name, `Error loading file: ${toErrMsg(err)}`, false);
     }
-    setLoading(false);
-  }, []);
+  }, [openDebugFile]);
 
   const blocks = lastResult?.blockResults ?? [];
   const fileOrder = ['report.md', 'solver_errors.md', 'equations.md', 'variables.md', 'variables.csv', 'analysis.json', 'residuals.md', 'residuals.txt', 'original.eescode', 'coolsolve.conf'];
@@ -59,12 +61,55 @@ export default function DebugViewer() {
   if (blocks.length === 0 && files.length === 0) {
     return (
       <div className="debug-viewer">
-        <div className="debug-empty">
-          <p>No block residuals or debug trace available yet.</p>
-          <p>Solve a model (<kbd>F2</kbd>) to inspect block convergence, or run <strong>Calculate → Debug Solve</strong> (<kbd>Ctrl+Shift+Enter</kbd>) for full trace files.</p>
-          <button className="toolbar-btn" onClick={refresh} style={{ marginTop: 8 }}>
-            <RefreshCw size={13} /> Refresh
-          </button>
+        <div className="parametric-empty-state" style={{ height: '100%' }}>
+          <div className="empty-state-content">
+            <div className="empty-state-icon">
+              <Layers size={36} />
+            </div>
+            <h2>Solver Debug & Decomposition</h2>
+            {isDynamic ? (
+              <>
+                <p>
+                  Block decomposition is not available for dynamic (INTEGRAL) models: the
+                  trajectory is marched step by step, so there is no static block table.
+                  The <strong>Integral</strong> panel shows the recorded trajectory instead.
+                </p>
+                <div className="empty-state-steps">
+                  <div className="step-item">
+                    <span className="step-num">1</span>
+                    <span>Press <strong>Ctrl+Shift+Enter</strong> (Debug Solve) to generate the trace files</span>
+                  </div>
+                  <div className="step-item">
+                    <span className="step-num">2</span>
+                    <span>Open <strong>integral.md</strong> or <strong>integral_table.csv</strong> below to inspect the run</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>
+                  Inspect equation block partitioning, Tarjan SCC decomposition, and per-block solver residuals.
+                </p>
+                <div className="empty-state-steps">
+                  <div className="step-item">
+                    <span className="step-num">1</span>
+                    <span>Open or edit your model in the Code Editor</span>
+                  </div>
+                  <div className="step-item">
+                    <span className="step-num">2</span>
+                    <span>Press <strong>F2</strong> (Solve) or <strong>Ctrl+Shift+Enter</strong> (Debug Solve)</span>
+                  </div>
+                  <div className="step-item">
+                    <span className="step-num">3</span>
+                    <span>Examine block-by-block convergence and generated analysis files</span>
+                  </div>
+                </div>
+              </>
+            )}
+            <button className="toolbar-btn" onClick={refresh} style={{ marginTop: 8 }}>
+              <RefreshCw size={13} /> Refresh
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -128,7 +173,7 @@ export default function DebugViewer() {
           {sortedFiles.map((f) => (
             <button
               key={f.name}
-              className={`debug-file-item ${selected === f.name ? 'active' : ''}`}
+              className={`debug-file-item ${debugFile?.name === f.name ? 'active' : ''}`}
               onClick={() => handleSelectFile(f.name)}
             >
               <FileText size={12} />
@@ -141,66 +186,8 @@ export default function DebugViewer() {
     </div>
   );
 
-  const previewSection = selected ? (
-    <div className="debug-content">
-      <div className="debug-content-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <FileText size={12} />
-          <span>{selected}</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <button
-            className="icon-btn"
-            onClick={() => setMaximized((m) => !m)}
-            title={maximized ? 'Restore pane' : 'Maximize pane'}
-            style={{ width: 22, height: 22 }}
-          >
-            {maximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </button>
-          <button
-            className="icon-btn"
-            onClick={() => {
-              setSelected(null);
-              setMaximized(false);
-            }}
-            title="Close preview"
-            style={{ width: 22, height: 22 }}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      </div>
-      {loading ? (
-        <div className="debug-loading"><span className="spinner" /></div>
-      ) : (
-        <pre className="debug-pre">{content}</pre>
-      )}
-    </div>
-  ) : (
-    <div className="debug-hint">
-      Select a trace file above to inspect equations, residuals, or solver steps.
-    </div>
-  );
-
   const filesPane = files.length > 0 ? (
-    !filesOpen ? (
-      filesListSection
-    ) : selected ? (
-      <SplitPane
-        direction="vertical"
-        defaultSize={35}
-        minSize={30}
-        className="debug-trace-split"
-      >
-        {filesListSection}
-        {previewSection}
-      </SplitPane>
-    ) : (
-      <div className="debug-trace-container">
-        {filesListSection}
-        {previewSection}
-      </div>
-    )
+    filesListSection
   ) : (
     <div className="debug-hint">
       Run <strong>Calculate → Debug Solve</strong> (<kbd>Ctrl+Shift+Enter</kbd>) to generate detailed equation &amp; residual trace files.
@@ -208,13 +195,11 @@ export default function DebugViewer() {
   );
 
   return (
-    <div className={`debug-viewer ${maximized ? 'is-maximized' : ''}`}>
-      {maximized && selected ? (
-        previewSection
-      ) : blocks.length > 0 && files.length > 0 ? (
+    <div className="debug-viewer">
+      {blocks.length > 0 && files.length > 0 ? (
         <SplitPane
           direction="vertical"
-          defaultSize={selected ? 35 : 50}
+          defaultSize={50}
           minSize={30}
           collapsed={
             !blocksOpen && !filesOpen

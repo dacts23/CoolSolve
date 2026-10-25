@@ -22,7 +22,7 @@ interface SelectProps {
 }
 
 function isGroup(opt: SelectOption): opt is SelectGroup {
-  return typeof opt === 'object' && opt !== null && 'group' in opt && Array.isArray((opt as any).options);
+  return typeof opt === 'object' && opt !== null && 'group' in opt && Array.isArray((opt as unknown as SelectGroup).options);
 }
 
 function resolveItem(item: SelectItem): { val: string; lbl: string } {

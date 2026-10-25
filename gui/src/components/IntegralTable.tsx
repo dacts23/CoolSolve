@@ -1,5 +1,5 @@
 import Select from './Select';
-import { Download } from 'lucide-react';
+import { Download, Sigma } from 'lucide-react';
 import SyntaxFooter from './SyntaxFooter';
 /**
  * IntegralTable.tsx — Bottom-panel tab for the equation-based dynamic
@@ -23,71 +23,13 @@ import SyntaxFooter from './SyntaxFooter';
 import { useMemo, useState, useCallback, useEffect } from 'react';
 import Plot from './PlotlyChart';
 import { useModelStore } from '../stores/modelStore';
-import { downloadCsv } from '../utils/csv';
+import { fmt } from '../stores/parametricStore';
+import { downloadCsv, parseCSVToTable } from '../utils/csv';
 import type { IntegralTableData } from '../api/types';
 
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/** Format a number for display (matches ParametricStudy's fmt). */
-function fmt(val: number): string {
-  if (!Number.isFinite(val)) return '—';
-  if (Number.isInteger(val) && Math.abs(val) < 1e9) return val.toString();
-  if (Math.abs(val) < 0.01 || Math.abs(val) >= 1e6) return val.toExponential(4);
-  return val.toPrecision(6);
-}
-
-/** Parse a CSV string (header row + numeric rows) into IntegralTableData. */
-function parseCSVToTable(csv: string, csvName: string): IntegralTableData | null {
-  if (!csv || !csv.trim()) return null;
-  const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return null;
-
-  // Split a CSV line respecting simple quoting (no embedded commas in quotes).
-  const splitLine = (line: string): string[] => {
-    const out: string[] = [];
-    let cur = '';
-    let inQuote = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        inQuote = !inQuote;
-      } else if (ch === ',' && !inQuote) {
-        out.push(cur);
-        cur = '';
-      } else {
-        cur += ch;
-      }
-    }
-    out.push(cur);
-    return out.map((s) => s.trim());
-  };
-
-  const header = splitLine(lines[0]);
-  if (header.length === 0) return null;
-
-  const data: Record<string, number[]> = {};
-  for (const col of header) data[col] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const cells = splitLine(lines[i]);
-    for (let c = 0; c < header.length; c++) {
-      const raw = cells[c] ?? '';
-      const num = Number(raw);
-      data[header[c]].push(Number.isFinite(num) ? num : NaN);
-    }
-  }
-
-  const numRows = data[header[0]].length;
-  return {
-    integrationVar: header[0],
-    columns: header,
-    data,
-    numRows,
-    csvName,
-  };
-}
 
 /** Build a CSV string from an IntegralTableData. */
 function tableToCSV(table: IntegralTableData): string {
@@ -174,8 +116,30 @@ export default function IntegralTable() {
             <h2 className="table-main-title">Integral Table</h2>
           </div>
         </div>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 20, textAlign: 'center' }}>
-          No integral trajectory available. Solve a model with an INTEGRAL function and $IntegralTable directive to view trajectory data.
+        <div className="parametric-empty-state" style={{ flex: 1 }}>
+          <div className="empty-state-content">
+            <div className="empty-state-icon">
+              <Sigma size={36} />
+            </div>
+            <h2>Dynamic Integral Trajectories</h2>
+            <p>
+              Simulate initial-value differential-algebraic equations (DAEs) and plot time-marching state variables.
+            </p>
+            <div className="empty-state-steps">
+              <div className="step-item">
+                <span className="step-num">1</span>
+                <span>Define differential equations using <strong>y = y0 + INTEGRAL(dydt, t, t0, tf)</strong></span>
+              </div>
+              <div className="step-item">
+                <span className="step-num">2</span>
+                <span>Add <strong>$IntegralTable t:step, var1, var2</strong> to record variables</span>
+              </div>
+              <div className="step-item">
+                <span className="step-num">3</span>
+                <span>Click <strong>Solve (F2)</strong> to compute and explore the dynamic solution table here</span>
+              </div>
+            </div>
+          </div>
         </div>
         <SyntaxFooter
           items={[
@@ -212,7 +176,7 @@ export default function IntegralTable() {
         </button>
       </div>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="parametric-results-content">
         {/* Plot */}
         {plotCandidates.length > 0 && (
           <>
@@ -226,14 +190,18 @@ export default function IntegralTable() {
               />
             </div>
             {plotData.data.length > 0 && (
-              <div className="parametric-plot">
-                <Plot
-                  data={plotData.data}
-                  layout={plotData.layout}
-                  config={{ responsive: true, displaylogo: false }}
-                  useResizeHandler
-                  style={{ width: '100%', height: 240 }}
-                />
+              <div className="parametric-plot-wrapper">
+                <div className="parametric-plot">
+                  <div className="parametric-plot-box">
+                    <Plot
+                      data={plotData.data}
+                      layout={plotData.layout}
+                      config={{ responsive: true, displaylogo: false }}
+                      useResizeHandler
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </>
@@ -247,7 +215,7 @@ export default function IntegralTable() {
                 {table.columns.map((c) => (
                   <th
                     key={c}
-                    className={c === table.integrationVar ? 'sweep-col' : ''}
+                    className={c === table.integrationVar ? 'sweep-col' : 'value-cell'}
                   >
                     {c}
                   </th>

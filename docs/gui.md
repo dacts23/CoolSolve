@@ -39,7 +39,7 @@ exactly as `main.cpp` does in CLI mode.
 | Framework | React + TypeScript | 18.3 / 5.6 |
 | Build tool | Vite | 5.4 |
 | Code editor | Monaco Editor (`@monaco-editor/react`) | 4.7 |
-| Plotting | Plotly.js (`react-plotly.js` + `plotly.js-basic-dist-min`) | 3.3 |
+| Plotting | Plotly.js (`react-plotly.js` + `plotly.js-cartesian-dist-min`) | 3.3 |
 | State management | Zustand | 5.0 |
 | Icons | Lucide React | 0.564 |
 
@@ -832,7 +832,7 @@ The model library is embedded by `cmake/embed_library.cmake` (shared helpers in 
 
 ```
 gui/
-├── package.json                   # Dependencies: react, @monaco-editor/react, zustand, lucide-react, plotly.js-basic-dist-min
+├── package.json                   # Dependencies: react, @monaco-editor/react, zustand, lucide-react, plotly.js-cartesian-dist-min
 ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
 ├── vite.config.ts                 # Vite config; /api proxy → port 8550
 ├── eslint.config.js
@@ -1044,7 +1044,7 @@ sections below). Remaining enhancements:
 |------|-------------|
 | CSV export | Download sweep results as CSV |
 | Multi-output plots | Multiple output variables on the same 1D chart |
-| 3D surface plots | `plotly.js-basic-dist-min` → `plotly.js-dist-min` for 3D surfaces (currently using heatmap/contour) |
+| 3D surface plots | `plotly.js-cartesian-dist-min` → `plotly.js-dist-min` for 3D surfaces (currently using heatmap/contour) |
 | Progress bar | Visual progress bar during parametric study (currently shows text status) |
 | Cancel button | Abort a running parametric study via `POST /api/v1/parametric/cancel` |
 

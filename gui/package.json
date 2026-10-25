@@ -1,11 +1,12 @@
 {
   "name": "gui",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --experimental-strip-types src/__tests__/audit_fixes.test.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },

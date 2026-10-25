@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import ConfirmModal from './ConfirmModal';
 import {
-  Play, Sun, Moon, Square, Zap,
+  Sun, Moon,
   PanelRight, PanelBottom, Check, Settings,
 } from 'lucide-react';
-import { useModelStore } from '../stores/modelStore';
+import { useModelStore, tabHasResults, hasResults } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
+import { useSolveRunner } from '../utils/useSolveRunner';
 import {
   editorInstance,
   toggleBraceComment,
@@ -15,10 +17,11 @@ import {
 import { exportAllPlots } from '../utils/exportPlots';
 import { toErrMsg } from '../utils/errors';
 import { showSessionModel } from '../utils/sessionModel';
+import { STATS_LOCAL_ONLY } from './UsageStats';
 import { useParametricStore } from '../stores/parametricStore';
 import { exportArrayTableToCsv, exportParametricStudyToCsv } from '../utils/csv';
+import { extractArrayGrid } from '../utils/arrayData';
 import { saveFileWithPicker } from '../utils/fileSave';
-import type { SSEEvent, SolveResponse } from '../api/types';
 
 type MenuId = 'file' | 'edit' | 'options' | 'calculate' | 'tables' | 'plots' | 'help' | null;
 
@@ -32,30 +35,22 @@ interface MenuItem {
 }
 
 export default function Toolbar() {
-  const solving = useModelStore((s) => s.solving);
-  const setSolving = useModelStore((s) => s.setSolving);
-  const setSolveResult = useModelStore((s) => s.setSolveResult);
   const addConsoleLine = useModelStore((s) => s.addConsoleLine);
-  const clearConsole = useModelStore((s) => s.clearConsole);
   const eescode = useModelStore((s) => s.eescode);
   const initials = useModelStore((s) => s.initials);
   const sol = useModelStore((s) => s.sol);
+  const dirty = useModelStore((s) => s.dirty);
+  const setDirty = useModelStore((s) => s.setDirty);
+  const openTabs = useModelStore((s) => s.openTabs);
   const modelName = useModelStore((s) => s.modelName);
   const setModelName = useModelStore((s) => s.setModelName);
-  const setLookupTables = useModelStore((s) => s.setLookupTables);
-  const setIntegralTable = useModelStore((s) => s.setIntegralTable);
-  const setIntegralCSV = useModelStore((s) => s.setIntegralCSV);
   const canGoBack = useModelStore((s) => s.canGoBack);
-  const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
   const setCanGoBack = useModelStore((s) => s.setCanGoBack);
   const clearModel = useModelStore((s) => s.clearModel);
   const loadFile = useModelStore((s) => s.loadFile);
   const lastResult = useModelStore((s) => s.lastResult);
-  const tryHarderAvailable = useModelStore((s) => s.tryHarderAvailable);
-  const setTryHarderAvailable = useModelStore((s) => s.setTryHarderAvailable);
-  const deepSearchRunning = useModelStore((s) => s.deepSearchRunning);
-  const setDeepSearchRunning = useModelStore((s) => s.setDeepSearchRunning);
+  const resultIsLive = useModelStore((s) => s.resultIsLive);
   const activeTabId = useModelStore((s) => s.activeTabId);
   const closeTab = useModelStore((s) => s.closeTab);
   const renameTab = useModelStore((s) => s.renameTab);
@@ -69,20 +64,24 @@ export default function Toolbar() {
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel);
   const bottomPanelOpen = useUIStore((s) => s.bottomPanelOpen);
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel);
-  const setBottomPanelOpen = useUIStore((s) => s.setBottomPanelOpen);
+  const setBottomTab = useUIStore((s) => s.setBottomTab);
   const activeModal = useUIStore((s) => s.activeModal);
   const setActiveModal = useUIStore((s) => s.setActiveModal);
   const openSettings = useUIStore((s) => s.openSettings);
-  const activeParametricResult = useParametricStore((s) => s.activeResult);
+  const activeParametricResult = useModelStore((s) => s.parametricResult);
+  const parametricRunning = useParametricStore((s) => s.running);
+
+  const [confirmNew, setConfirmNew] = useState(false);
+  const [confirmCloseTab, setConfirmCloseTab] = useState<{ id: string; name: string } | null>(null);
 
   const hasArrayVariables = Boolean(
     lastResult?.variables &&
-    Object.keys(lastResult.variables).some((k) => /^.+\[\d+\]$/.test(k))
+    Object.keys(lastResult.variables).some((k) => /^.+\[\d+(?:,[^\]]+)?\]$/.test(k))
   );
 
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
   const menuBarRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const { handleSolve, handleStopSolve, solving, tryHarderAvailable } = useSolveRunner();
 
   // Update page title when model name changes
   useEffect(() => {
@@ -108,138 +107,11 @@ export default function Toolbar() {
     };
   }, [openMenu]);
 
-  // Cleanup SSE on unmount
-  useEffect(() => {
-    return () => {
-      if (eventSourceRef.current) eventSourceRef.current.close();
-    };
-  }, []);
-
-  // Solve handler - async with SSE progress streaming.
-  const handleSolve = useCallback(
-    async (debug = false, deepSearch = false) => {
-      if (!eescode.trim()) return;
-      setSolving(true);
-      setDeepSearchRunning(deepSearch);
-      setTryHarderAvailable(false);
-      clearConsole();
-      setBottomPanelOpen(true);
-      addConsoleLine(deepSearch
-        ? '>>> Starting deep search (try harder)...'
-        : '>>> Starting solve...');
-
-      try {
-        await api.putEescode(eescode);
-        if (initials) await api.putInitials(initials);
-
-        await api.solve({ debug, deepSearch });
-
-        if (eventSourceRef.current) eventSourceRef.current.close();
-        const es = api.subscribeSolveProgress((event: SSEEvent) => {
-          switch (event.type) {
-            case 'start':
-              addConsoleLine(`>>> ${event.message}`);
-              break;
-            case 'progress':
-              addConsoleLine(`    ${event.message}`);
-              break;
-            case 'block':
-              if (event.event === 'start' || event.event === 'done' || event.event === 'fail') {
-                addConsoleLine(`    ${event.message}`);
-              }
-              break;
-            case 'done': {
-              addConsoleLine(`>>> Solve SUCCESS`);
-              const result = event.result as SolveResponse;
-              if (result) {
-                setSolveResult(result);
-                addConsoleLine(`    Equations: ${result.equationCount}, Variables: ${result.variableCount}`);
-                addConsoleLine(`    Blocks: ${result.totalBlocks}, Largest: ${result.largestBlock}`);
-                addConsoleLine(`    Total iterations: ${result.totalIterations}`);
-                addConsoleLine(`    Time: ${result.timing.total_ms.toFixed(0)} ms (solve: ${result.timing.solve_ms.toFixed(0)} ms)`);
-                addConsoleLine(`    Variables solved: ${Object.keys(result.variables).length}`);
-                if (result.diagnostics && result.diagnostics.length > 0) {
-                  addConsoleLine(`--- Diagnostics (${result.diagnostics.length}) ---`);
-                  for (const d of result.diagnostics) {
-                    const loc = d.line ? ` (line ${d.line})` : '';
-                    addConsoleLine(`    [${d.severity}]${loc}: ${d.message}`);
-                  }
-                }
-                api.getSol().then((s) => setSol(s.content)).catch(() => {});
-                api.getTables().then((r) => setLookupTables(r.tables)).catch(() => {});
-                if (result.integralTable) {
-                  setIntegralTable(result.integralTable);
-                  setIntegralCSV('');
-                  setActivityMode('integral');
-                } else {
-                  setIntegralTable(null);
-                  api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => {});
-                }
-              }
-              setSolving(false);
-              setDeepSearchRunning(false);
-              es.close();
-              break;
-            }
-            case 'error': {
-              const result = event.result as SolveResponse | undefined;
-              if (result) {
-                setSolveResult(result);
-                if (result.isSquare === false) {
-                  addConsoleLine(`>>> Solve FAILED: System is not square (${result.equationCount} equations, ${result.variableCount} variables)`);
-                } else if (result.status === 'ParseFailed') {
-                  addConsoleLine(`>>> Solve FAILED: Parse error`);
-                } else {
-                  addConsoleLine(`>>> Solve FAILED: ${result.errorMessage || result.status}`);
-                }
-                if (result.detailedError) addConsoleLine(`    ${result.detailedError}`);
-                if (result.status !== 'ParseFailed' && result.status !== 'InvalidInput') {
-                  for (const block of result.blockResults) {
-                    if (!block.success) {
-                      addConsoleLine(
-                        `    Block ${block.id}: ${block.status} (res=${block.maxResidual.toExponential(2)}) ${block.errorMessage}`
-                      );
-                    }
-                  }
-                }
-                if (result.diagnostics && result.diagnostics.length > 0) {
-                  addConsoleLine(`--- Diagnostics (${result.diagnostics.length}) ---`);
-                  for (const d of result.diagnostics) {
-                    const loc = d.line ? ` (line ${d.line})` : '';
-                    addConsoleLine(`    [${d.severity}]${loc}: ${d.message}`);
-                  }
-                }
-                const rescueable =
-                  result.status !== 'ParseFailed' &&
-                  result.status !== 'InvalidInput' &&
-                  result.isSquare !== false &&
-                  !deepSearchRunning;
-                if (rescueable) setTryHarderAvailable(true);
-              } else {
-                addConsoleLine(`>>> ERROR: ${event.message}`);
-              }
-              setSolving(false);
-              setDeepSearchRunning(false);
-              es.close();
-              break;
-            }
-          }
-        });
-        eventSourceRef.current = es;
-      } catch (err: unknown) {
-        addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
-        setSolving(false);
-        setDeepSearchRunning(false);
-      }
-    },
-    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setActivityMode, setLookupTables, setIntegralTable, setIntegralCSV, setDeepSearchRunning, setTryHarderAvailable, deepSearchRunning]
-  );
-
   // Check / Format Equations
   const handleCheckEquations = useCallback(async () => {
     if (!eescode.trim()) return;
     setActivityMode('code');
-    setBottomPanelOpen(true);
+    setBottomTab('console');
     try {
       const res = await api.parse(eescode);
       const nEq = res.equationCount;
@@ -263,10 +135,10 @@ export default function Toolbar() {
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, addConsoleLine, setBottomPanelOpen, setActivityMode]);
+  }, [eescode, addConsoleLine, setBottomTab, setActivityMode]);
 
   // New - clear everything
-  const handleNew = useCallback(async () => {
+  const doNew = useCallback(async () => {
     try {
       const res = await api.newModel();
       clearModel();
@@ -277,6 +149,29 @@ export default function Toolbar() {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [clearModel, addConsoleLine, setCanGoBack, setActivityMode]);
+
+  const handleNew = useCallback(() => {
+    // New Model discards the current model's code and run results: say so first.
+    const needsConfirm =
+      dirty ||
+      openTabs.some((t) => t.dirty || tabHasResults(t)) ||
+      hasResults(useModelStore.getState());
+    if (needsConfirm) {
+      setConfirmNew(true);
+    } else {
+      doNew();
+    }
+  }, [openTabs, dirty, doNew]);
+
+  const handleCloseActiveTab = useCallback(() => {
+    const activeTab = openTabs.find((t) => t.id === activeTabId);
+    if (activeTab?.dirty || dirty || (activeTab && tabHasResults(activeTab)) || hasResults(useModelStore.getState())) {
+      setConfirmCloseTab({ id: activeTabId, name: activeTab?.name || 'File' });
+    } else {
+      setActivityMode('code');
+      closeTab(activeTabId);
+    }
+  }, [openTabs, activeTabId, dirty, setActivityMode, closeTab]);
 
   // Open - supports equation files and .zip bundles
   const handleOpen = useCallback(() => {
@@ -316,15 +211,44 @@ export default function Toolbar() {
     input.click();
   }, [addConsoleLine, setCanGoBack, loadFile, setActivityMode]);
 
-  // Save - download ZIP bundle
-  const handleSave = useCallback(async () => {
+  // Save / Save As - download the equation file from the editor (.eescode only)
+  const handleSaveScript = useCallback(async (logLabel: string) => {
+    if (!eescode.trim()) {
+      addConsoleLine('>>> Nothing to save');
+      return;
+    }
+    const stem = modelName || 'model';
+    const filename = `${stem}.eescode`;
+    try {
+      const result = await saveFileWithPicker(
+        new Blob([eescode], { type: 'text/plain;charset=utf-8' }),
+        filename,
+        [{ description: 'CoolSolve Equation File (*.eescode)', accept: { 'text/plain': ['.eescode', '.ees', '.txt'] } }]
+      );
+      if (result.saved && result.name) {
+        setDirty(false);
+        const newStem = result.name.replace(/\.[^.]+$/, '');
+        setModelName(newStem);
+        api.setModelName(newStem).catch(() => {});
+        renameTab(activeTabId, result.name);
+        addConsoleLine(`>>> ${logLabel}: ${result.name}`);
+      }
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
+    }
+  }, [eescode, modelName, setModelName, renameTab, activeTabId, addConsoleLine, setDirty]);
+
+  // Save Bundle - download the whole model as a .zip (script, config, tables, results)
+  const handleSaveBundle = useCallback(async () => {
     if (!eescode.trim()) {
       addConsoleLine('>>> Nothing to save');
       return;
     }
     try {
+      // Flush the whole model so the bundle matches what the editor shows.
       await api.putEescode(eescode);
       if (initials) await api.putInitials(initials);
+      await api.putConf(useModelStore.getState().conf);
 
       let name = modelName;
       if (!name) {
@@ -340,6 +264,7 @@ export default function Toolbar() {
       ]);
 
       if (result.saved) {
+        setDirty(false);
         if (result.name) {
           const stem = result.name.replace(/\.[^.]+$/, '');
           if (stem && stem !== modelName) {
@@ -352,34 +277,7 @@ export default function Toolbar() {
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, initials, modelName, setModelName, addConsoleLine]);
-
-
-  // Save As
-  const handleSaveAs = useCallback(async () => {
-    if (!eescode.trim()) {
-      addConsoleLine('>>> Nothing to save');
-      return;
-    }
-    const stem = modelName || 'model';
-    const filename = `${stem}.eescode`;
-    try {
-      const result = await saveFileWithPicker(
-        new Blob([eescode], { type: 'text/plain;charset=utf-8' }),
-        filename,
-        [{ description: 'CoolSolve Equation File (*.eescode)', accept: { 'text/plain': ['.eescode', '.ees', '.txt'] } }]
-      );
-      if (result.saved && result.name) {
-        const newStem = result.name.replace(/\.[^.]+$/, '');
-        setModelName(newStem);
-        api.setModelName(newStem).catch(() => {});
-        renameTab(activeTabId, result.name);
-        addConsoleLine(`>>> Saved As: ${result.name}`);
-      }
-    } catch (err: unknown) {
-      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
-    }
-  }, [eescode, modelName, setModelName, renameTab, activeTabId, addConsoleLine]);
+  }, [eescode, initials, modelName, setModelName, addConsoleLine, setDirty]);
 
   // Export .sol
   const handleExportSol = useCallback(async () => {
@@ -401,26 +299,7 @@ export default function Toolbar() {
 
   const handleExportArrays = useCallback(() => {
     if (!lastResult?.variables) return;
-    const entries: { baseName: string; index: number; value: number }[] = [];
-    for (const [name, val] of Object.entries(lastResult.variables)) {
-      const match = name.match(/^(.+)\[(\d+)\]$/);
-      if (match) {
-        entries.push({ baseName: match[1], index: parseInt(match[2], 10), value: val });
-      }
-    }
-    const baseSet = new Set<string>();
-    const indexSet = new Set<number>();
-    const grid = new Map<string, Map<number, number>>();
-    for (const e of entries) {
-      baseSet.add(e.baseName);
-      indexSet.add(e.index);
-      if (!grid.has(e.baseName)) grid.set(e.baseName, new Map());
-      grid.get(e.baseName)!.set(e.index, e.value);
-    }
-    const baseNames = Array.from(baseSet).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base' })
-    );
-    const indices = Array.from(indexSet).sort((a, b) => a - b);
+    const { baseNames, indices, grid } = extractArrayGrid(lastResult.variables);
     exportArrayTableToCsv(baseNames, indices, grid, modelName);
     addConsoleLine(`>>> Exported array table to CSV`);
   }, [lastResult, modelName, addConsoleLine]);
@@ -451,18 +330,14 @@ export default function Toolbar() {
     }
   }, [addConsoleLine, setCanGoBack, setActivityMode]);
 
-  // Stop/cancel solve
-  const handleStopSolve = useCallback(async () => {
-    try {
-      await api.cancelSolve();
-      addConsoleLine('>>> Cancel requested...');
-    } catch (err: unknown) {
-      addConsoleLine(`>>> ${toErrMsg(err)}`);
-    }
-  }, [addConsoleLine]);
-
   // Update guesses
   const handleUpdateGuesses = useCallback(async () => {
+    // The server updates guesses from its own last solve, which is only the
+    // model on screen when the shown result came from a live run of it.
+    if (!useModelStore.getState().resultIsLive) {
+      addConsoleLine('>>> Re-solve this model before updating guesses from its solution.');
+      return;
+    }
     try {
       await api.updateGuesses();
       const init = await api.getInitials();
@@ -529,6 +404,16 @@ export default function Toolbar() {
   // Global keyboard shortcuts (IDE conventions)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Text fields keep their own keys (Ctrl+N while typing must not open a
+      // new model). Monaco's hidden textarea is the editor: keep shortcuts there.
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) &&
+        !target.closest('.monaco-editor')
+      ) {
+        return;
+      }
       if (e.key === 'F2' || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
         e.preventDefault();
         if (!solving) handleSolve(e.shiftKey, tryHarderAvailable && !e.shiftKey);
@@ -538,16 +423,16 @@ export default function Toolbar() {
         setRightTab('variables');
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        handleSaveAs();
+        handleSaveScript('Saved As');
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        handleSave();
+        handleSaveScript('Saved');
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         handleOpen();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w') {
         e.preventDefault();
-        closeTab(activeTabId);
+        handleCloseActiveTab();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         handleNew();
@@ -572,9 +457,9 @@ export default function Toolbar() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [
-    solving, handleSolve, handleSave, handleOpen, handleNew,
+    solving, handleSolve, handleSaveScript, handleOpen, handleNew, handleCloseActiveTab,
     handleUpdateGuesses, handleCheckEquations, handleStopSolve,
-    tryHarderAvailable, setRightTab, setActiveModal, toggleRightPanel, toggleBottomPanel,
+    tryHarderAvailable, setRightTab, setActiveModal, toggleRightPanel, toggleBottomPanel, setActivityMode,
   ]);
 
   const menus: Record<Exclude<MenuId, null>, { label: string; items: MenuItem[] }> = {
@@ -586,15 +471,17 @@ export default function Toolbar() {
         { label: 'Open from Model Library…', action: () => setActiveModal('library') },
         { label: 'Revert to Previous Model', disabled: !canGoBack, action: handleBack },
         { divider: true },
-        { label: 'Save', shortcut: 'Ctrl+S', disabled: !eescode.trim(), action: handleSave },
-        { label: 'Save As…', shortcut: 'Ctrl+Shift+S', disabled: !eescode.trim(), action: handleSaveAs },
+        { label: 'Save', shortcut: 'Ctrl+S', disabled: !eescode.trim(), action: () => handleSaveScript('Saved') },
+        { label: 'Save As…', shortcut: 'Ctrl+Shift+S', disabled: !eescode.trim(), action: () => handleSaveScript('Saved As') },
         { divider: true },
-        { label: 'Close File', shortcut: 'Ctrl+W', action: () => { setActivityMode('code'); closeTab(activeTabId); } },
+        { label: 'Save Bundle (.zip)…', disabled: !eescode.trim(), action: handleSaveBundle },
+        { divider: true },
+        { label: 'Close File', shortcut: 'Ctrl+W', action: handleCloseActiveTab },
         { divider: true },
         { label: 'Export Solution (.sol)', disabled: !sol.trim(), action: handleExportSol },
         {
           label: 'Export LaTeX / PDF Report…',
-          disabled: !lastResult?.success || !lastResult?.latexReportAvailable,
+          disabled: !lastResult?.success || !lastResult?.latexReportAvailable || !resultIsLive,
           action: handleLatexReport,
         },
       ],
@@ -615,22 +502,25 @@ export default function Toolbar() {
     options: {
       label: 'Options',
       items: [
-        { label: 'Variable Info & Guesses…', shortcut: 'F9', action: () => { setActivityMode('code'); setRightTab('variables'); } },
+        { label: 'Variable Info & Guesses…', shortcut: 'F9', action: () => { setActivityMode('code'); useUIStore.getState().setRightPanelOpen(true); setRightTab('variables'); } },
         { label: 'Function Info…', shortcut: 'Ctrl+I', action: () => setActiveModal('functionInfo') },
         { label: 'Unit System ($UnitSystem)…', action: () => setActiveModal('unitSystem') },
-        { label: 'Solver Configuration (coolsolve.conf)…', action: () => { setActivityMode('code'); setRightTab('config'); } },
+        { label: 'Integration Options (INTEGRAL)…', action: () => setActivityMode('integral') },
+        { label: 'Solver Configuration (coolsolve.conf)…', action: () => { setActivityMode('code'); useUIStore.getState().setRightPanelOpen(true); setRightTab('config'); } },
+        { divider: true },
+        { label: 'Warnings & Diagnostics', action: () => { useUIStore.getState().setBottomPanelOpen(true); setBottomTab('diagnostics'); } },
       ],
     },
     calculate: {
       label: 'Calculate',
       items: [
         { label: 'Check / Format Equations', shortcut: 'Ctrl+K', disabled: !eescode.trim(), action: handleCheckEquations },
-        { label: 'Solve', shortcut: 'F2', disabled: solving || !eescode.trim(), action: () => handleSolve(false, false) },
-        { label: 'Solve with Deep Search (Try Harder)', disabled: solving || !eescode.trim(), action: () => handleSolve(false, true) },
-        { label: 'Debug Solve (Full Trace)', shortcut: 'Ctrl+Shift+Enter', disabled: solving || !eescode.trim(), action: () => handleSolve(true, false) },
+        { label: 'Solve', shortcut: 'F2', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(false, false) },
+        { label: 'Solve with Deep Search (Try Harder)', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(false, true) },
+        { label: 'Debug Solve (Full Trace)', shortcut: 'Ctrl+Shift+Enter', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(true, false) },
         { label: 'Stop Calculation', shortcut: 'Esc', disabled: !solving, action: handleStopSolve },
         { divider: true },
-        { label: 'Update Guesses from Solution', shortcut: 'Ctrl+G', disabled: !lastResult?.success, action: handleUpdateGuesses },
+        { label: 'Update Guesses from Solution', shortcut: 'Ctrl+G', disabled: !lastResult?.success || !resultIsLive, action: handleUpdateGuesses },
         { label: 'Reset Guesses to Default', disabled: !initials.trim(), action: handleResetGuesses },
       ],
     },
@@ -639,7 +529,7 @@ export default function Toolbar() {
       items: [
         { label: 'Parametric Table (Sensitivity Study)', action: () => setActivityMode('parametric') },
         { label: 'Lookup Tables', action: () => setActivityMode('tables') },
-        { label: 'Arrays Table', action: () => { setActivityMode('code'); setRightTab('arrays'); } },
+        { label: 'Arrays Table', action: () => { setActivityMode('code'); useUIStore.getState().setRightPanelOpen(true); setRightTab('arrays'); } },
         { label: 'Integral Table ($IntegralTable)', action: () => setActivityMode('integral') },
         { divider: true },
         { label: 'Export Arrays Table to CSV', disabled: !hasArrayVariables, action: handleExportArrays },
@@ -655,10 +545,13 @@ export default function Toolbar() {
     help: {
       label: 'Help',
       items: [
-        {
-          label: 'Language & Fluid Reference',
+        { label: 'Language & Fluid Reference',
           action: () => window.open('/docs/#docs%2Flanguage_reference.md', '_blank', 'noopener,noreferrer'),
         },
+        // Usage stats list every client's IPs/model names: local installs only.
+        ...(STATS_LOCAL_ONLY
+          ? [{ label: 'Solve Usage Statistics…', action: () => setActiveModal('stats') }]
+          : []),
         { divider: true },
         { label: 'About CoolSolve-Canary', action: () => setActiveModal('about') },
       ],
@@ -715,42 +608,8 @@ export default function Toolbar() {
         </nav>
       </div>
 
-      {/* Right: Only immediate actions at hand */}
+      {/* Right: Window controls & tools */}
       <div className="topbar-right">
-        {solving && (
-          <button
-            className="toolbar-btn danger"
-            onClick={handleStopSolve}
-            title="Stop calculation (Esc)"
-          >
-            <Square size={12} /> Stop
-          </button>
-        )}
-        <button
-          className={`toolbar-btn primary${tryHarderAvailable ? ' try-harder' : ''}`}
-          onClick={() => handleSolve(false, tryHarderAvailable)}
-          disabled={solving || !eescode.trim()}
-          title={
-            solving
-              ? (deepSearchRunning ? 'Deep search in progress…' : 'Solving…')
-              : tryHarderAvailable
-                ? 'Try Harder: re-run with Deep Search pipeline (F2)'
-                : 'Solve equations (F2 / Ctrl+Enter)'
-          }
-        >
-          {solving ? <span className="spinner" /> : tryHarderAvailable ? <Zap size={13} /> : <Play size={13} />}
-          <span>
-            {solving
-              ? (deepSearchRunning ? 'Searching…' : 'Solving…')
-              : tryHarderAvailable
-                ? 'Try Harder'
-                : 'Solve'}
-          </span>
-        </button>
-
-        <div className="topbar-divider" />
-
-
         <button
           className={`icon-btn ${rightPanelOpen && activityMode === 'code' ? 'active' : ''}`}
           onClick={toggleRightPanel}
@@ -781,6 +640,32 @@ export default function Toolbar() {
           <Settings size={15} />
         </button>
       </div>
+
+      {confirmNew && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message="Creating a new model will discard this model's code and its run results (solution, sweeps, integral table)."
+          confirmLabel="Discard & Create New"
+          onConfirm={() => {
+            setConfirmNew(false);
+            doNew();
+          }}
+          onCancel={() => setConfirmNew(false)}
+        />
+      )}
+      {confirmCloseTab && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message={`"${confirmCloseTab.name}" has unsaved changes or run results. Closing it will discard them.`}
+          confirmLabel="Discard & Close"
+          onConfirm={() => {
+            setActivityMode('code');
+            closeTab(confirmCloseTab.id);
+            setConfirmCloseTab(null);
+          }}
+          onCancel={() => setConfirmCloseTab(null)}
+        />
+      )}
     </header>
   );
 }

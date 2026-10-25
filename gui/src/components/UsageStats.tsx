@@ -13,6 +13,15 @@ import { api } from '../api/client';
 import { useUIStore } from '../stores/uiStore';
 import type { UsageStatsResponse } from '../api/types';
 
+/**
+ * The usage log can contain other users' IPs and model names, so the dashboard
+ * is only shown when the app runs on this machine. The /api/v1/stats/log
+ * endpoint must be gated the same way server-side.
+ */
+export const STATS_LOCAL_ONLY = ['localhost', '127.0.0.1', '[::1]', ''].includes(
+  window.location.hostname
+);
+
 // ============================================================================
 // Helpers
 // ============================================================================

@@ -1,7 +1,7 @@
 import { X } from 'lucide-react';
 import { useUIStore } from '../stores/uiStore';
 import { ACCENTS, APP_PALETTES, EDITOR_FONTS, EDITOR_FONT_SIZES } from '../utils/appearance';
-import { EDITOR_THEME_CHOICES } from '../languages/editorThemes';
+import { THEME_CHOICES } from '../languages/editorThemes';
 import Select from './Select';
 
 function Row({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
@@ -60,12 +60,15 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <section className="settings-content">
             {settingsTab === 'appearance' ? (
               <>
-                <Row title="Background Palette" hint="Modern themes (Default, Graphene, Nord, Dracula, etc.)">
+                <Row title="Theme" hint={`App and editor theme (${theme === 'dark' ? 'Dark' : 'Light'} mode active)`}>
                   <Select
-                    value={palette}
-                    options={APP_PALETTES.map((p) => ({ value: p.id, label: p.label }))}
+                    value={(palette || 'catppuccin').replace(/-(dark|light)$/, '')}
+                    options={THEME_CHOICES.map((t) => {
+                      const pal = APP_PALETTES.find((p) => p.family === t.id && p.dark === (theme === 'dark'));
+                      return { value: t.id, label: pal ? pal.variantLabel : t.label };
+                    })}
                     onChange={setPalette}
-                    style={{ minWidth: 170 }}
+                    style={{ minWidth: 220 }}
                   />
                 </Row>
                 <Row title="Accent color" hint="Used for focus, selection and buttons">
@@ -85,12 +88,16 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               </>
             ) : (
               <>
-                <Row title="Color scheme" hint="Syntax highlighting colors for equations">
+                <Row title="Color scheme" hint={`Syntax highlighting theme (${theme === 'dark' ? 'Dark' : 'Light'} variant)`}>
                   <Select
-                    value={editorTheme}
-                    options={EDITOR_THEME_CHOICES}
+                    value={(editorTheme || palette || 'catppuccin').replace(/-(dark|light)$/, '')}
+                    options={THEME_CHOICES.map((t) => {
+                      const pal = APP_PALETTES.find((p) => p.family === t.id && p.dark === (theme === 'dark'));
+                      return { value: t.id, label: pal ? pal.variantLabel : t.label };
+                    })}
                     onChange={setEditorTheme}
                     align="right"
+                    style={{ minWidth: 220 }}
                   />
                 </Row>
                 <Row title="Match app background" hint="Keep editor canvas seamlessly integrated with app surface">

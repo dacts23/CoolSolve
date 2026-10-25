@@ -1,10 +1,8 @@
 // REST API client for CoolSolve backend
 
 import type {
-  HealthResponse,
   ParseResponse,
   SolveResponse,
-  VariablesResponse,
   FileOpenResponse,
   LibraryMenuResponse,
   LibraryOpenResponse,
@@ -21,7 +19,7 @@ import type {
   IntegralTableData,
   UsageStatsResponse,
 } from './types';
-import { sessionHeaders, withSession } from './session';
+import { sessionHeaders, withSession } from './session.ts';
 
 const API_BASE = '/api/v1';
 
@@ -33,16 +31,32 @@ function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 
+/** Throw the server's error message for a failed response. */
+async function apiError(res: Response): Promise<never> {
+  const body = await res.json().catch(() => ({ error: res.statusText }));
+  throw new Error(body.error || `HTTP ${res.status}`);
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `HTTP ${res.status}`);
-  }
+  if (!res.ok) await apiError(res);
   return res.json();
+}
+
+/**
+ * Writes to the session files run one at a time, in call order. Without this,
+ * overlapping callers (tab switches, config edits, solve) can interleave and
+ * leave the server holding two different models mixed together.
+ */
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+function queued<T>(start: () => Promise<T>): Promise<T> {
+  const done = writeQueue.then(start);
+  writeQueue = done.catch(() => {});
+  return done;
 }
 
 async function requestOptional<T>(path: string): Promise<T | null> {
@@ -59,8 +73,6 @@ export const api = {
   bundleUrl: () => withSession(`${API_BASE}/files/bundle`),
 
   // Health
-  health: () => request<HealthResponse>('/health'),
-
   /** Marks this tab's session as in use: the server drops sessions idle for 24 h. */
   keepAlive: async (): Promise<void> => {
     await apiFetch('/keepalive', { method: 'POST' });
@@ -76,25 +88,31 @@ export const api = {
   getEescode: () =>
     request<{ content: string; filePath: string; modelName: string; libraryId: string }>('/files/eescode'),
   putEescode: (content: string) =>
-    request<{ success: boolean }>('/files/eescode', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    }),
+    queued(() =>
+      request<{ success: boolean }>('/files/eescode', {
+        method: 'PUT',
+        body: JSON.stringify({ content }),
+      })
+    ),
 
   getInitials: () => request<{ content: string }>('/files/initials'),
   putInitials: (content: string) =>
-    request<{ success: boolean }>('/files/initials', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    }),
+    queued(() =>
+      request<{ success: boolean }>('/files/initials', {
+        method: 'PUT',
+        body: JSON.stringify({ content }),
+      })
+    ),
 
   getSol: () => request<{ content: string }>('/files/sol'),
   getConf: () => request<{ content: string }>('/files/conf'),
   putConf: (content: string) =>
-    request<{ success: boolean }>('/files/conf', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    }),
+    queued(() =>
+      request<{ success: boolean }>('/files/conf', {
+        method: 'PUT',
+        body: JSON.stringify({ content }),
+      })
+    ),
 
   openFile: (path: string) =>
     request<FileOpenResponse>('/files/open', {
@@ -135,8 +153,8 @@ export const api = {
       body: JSON.stringify(options || {}),
     }),
 
-  // Subscribe to solve progress via SSE
-  subscribeSolveProgress: (onEvent: (event: SSEEvent) => void): EventSource => {
+  // Subscribe to solve progress via SSE. `onError` runs when the stream drops.
+  subscribeSolveProgress: (onEvent: (event: SSEEvent) => void, onError?: () => void): EventSource => {
     const es = new EventSource(withSession(`${API_BASE}/solve/stream`));
     es.onmessage = (msg) => {
       try {
@@ -148,6 +166,7 @@ export const api = {
     };
     es.onerror = () => {
       es.close();
+      onError?.();
     };
     return es;
   },
@@ -156,9 +175,6 @@ export const api = {
 
   cancelSolve: () =>
     request<{ success: boolean; message: string }>('/solve/cancel', { method: 'POST' }),
-
-  // Variables
-  getVariables: () => request<VariablesResponse>('/variables'),
 
   // Update guesses
   updateGuesses: () =>
@@ -179,10 +195,7 @@ export const api = {
   // Upload ZIP file
   uploadFiles: async (formData: FormData): Promise<UploadResponse> => {
     const res = await apiFetch('/files/upload', { method: 'POST', body: formData });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) await apiError(res);
     return res.json();
   },
 
@@ -262,10 +275,7 @@ export const api = {
 
   getTableCSV: async (name: string): Promise<string> => {
     const res = await apiFetch(`/tables/${encodeURIComponent(name)}`);
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) await apiError(res);
     return res.text();
   },
 
@@ -275,10 +285,7 @@ export const api = {
       headers: { 'Content-Type': 'text/csv' },
       body: csvContent,
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) await apiError(res);
     return res.json();
   },
 

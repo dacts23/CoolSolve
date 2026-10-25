@@ -58,7 +58,7 @@ export async function exportAllPlots(): Promise<LatexPlotImage[]> {
       let name: string;
       if (div.closest('.thermo-diagram')) {
         name = 'thermo_diagrams.png';
-      } else if (div.closest('.parametric-plot')) {
+      } else if (div.closest('.parametric-plot, .parametric-plot-box')) {
         parametricIdx++;
         name = `parametric_${parametricIdx}.png`;
       } else {

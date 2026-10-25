@@ -127,6 +127,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         selectedFluid: get().selectedFluid || def,
       });
     } catch {
+      // Backend unavailable
     }
   },
 }));

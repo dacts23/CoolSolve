@@ -1,10 +1,11 @@
 import { create } from 'zustand';
-import { systemTheme, type ThemeMode, DEFAULT_EDITOR_FONT_SIZE, STANDARD_FONT_SIZES } from '../utils/appearance';
+import { systemTheme, type ThemeMode, DEFAULT_EDITOR_FONT_SIZE, STANDARD_FONT_SIZES } from '../utils/appearance.ts';
 
 export type ActivityMode = 'code' | 'parametric' | 'diagrams' | 'tables' | 'integral';
-export type RightTab = 'variables' | 'arrays' | 'config' | 'debug';
-export type ModalType = 'library' | 'functionInfo' | 'unitSystem' | 'about' | 'settings' | null;
+export type RightTab = 'solution' | 'variables' | 'arrays' | 'config' | 'debug';
+export type ModalType = 'library' | 'functionInfo' | 'unitSystem' | 'about' | 'settings' | 'stats' | null;
 export type SettingsTab = 'appearance' | 'editor';
+export type BottomTab = 'console' | 'diagnostics' | 'debug';
 
 interface UIState {
   /** Resolved theme (what is actually shown). */
@@ -17,11 +18,12 @@ interface UIState {
   forceAppBg: boolean;
   settingsTab: SettingsTab;
   activityMode: ActivityMode;
-  leftPanelOpen: boolean;
   leftPanelWidth: number;
   palette: string;
   rightTab: RightTab;
   rightPanelOpen: boolean;
+  bottomTab: BottomTab;
+  debugFile: { name: string; content: string; loading: boolean } | null;
   bottomPanelOpen: boolean;
   consolePosition: 'bottom' | 'rhs';
   minimap: boolean;
@@ -29,7 +31,6 @@ interface UIState {
   stickyScroll: boolean;
   showUnderlines: boolean;
   activeModal: ModalType;
-  splitPosition: number; // percentage for left pane
 
   setTheme: (theme: 'light' | 'dark') => void;
   setThemeMode: (mode: ThemeMode) => void;
@@ -46,11 +47,12 @@ interface UIState {
   openSettings: (tab?: SettingsTab) => void;
   toggleTheme: () => void;
   setActivityMode: (mode: ActivityMode) => void;
-  setLeftPanelOpen: (open: boolean) => void;
-  toggleLeftPanel: () => void;
   setRightTab: (tab: RightTab) => void;
   setRightPanelOpen: (open: boolean) => void;
   toggleRightPanel: () => void;
+  setBottomTab: (tab: BottomTab) => void;
+  openDebugFile: (name: string, content: string, loading?: boolean) => void;
+  closeDebugFile: () => void;
   setBottomPanelOpen: (open: boolean) => void;
   toggleBottomPanel: () => void;
   setConsolePosition: (pos: 'bottom' | 'rhs') => void;
@@ -64,28 +66,30 @@ interface UIState {
   setStickyScroll: (sticky: boolean) => void;
   setShowUnderlines: (underlines: boolean) => void;
   setActiveModal: (modal: ModalType) => void;
-  setSplitPosition: (pos: number) => void;
 }
 
-const savedPalette = localStorage.getItem('coolsolve-palette') || 'default';
-const savedMode: ThemeMode = savedPalette === 'light' ? 'light' : 'dark';
+const savedTheme = (localStorage.getItem('coolsolve-theme') as ThemeMode) || 'dark';
+const rawPalette = localStorage.getItem('coolsolve-palette') || 'catppuccin';
+const savedPalette = (rawPalette === 'light' || rawPalette === 'default') ? 'catppuccin' : rawPalette.replace(/-(dark|light)$/, '');
+const savedEditorTheme = (localStorage.getItem('coolsolve-editor-theme') || savedPalette).replace(/-(dark|light)$/, '');
 const resolve = (m: ThemeMode) => (m === 'system' ? systemTheme() : m);
 
 export const useUIStore = create<UIState>((set) => ({
-  theme: resolve(savedMode),
-  themeMode: savedMode,
+  theme: resolve(savedTheme),
+  themeMode: savedTheme,
   accent: localStorage.getItem('coolsolve-accent') || 'blue',
-  editorTheme: localStorage.getItem('coolsolve-editor-theme') || 'default',
+  editorTheme: savedEditorTheme,
   editorFont: localStorage.getItem('coolsolve-editor-font') || 'consolas',
   editorFontSize: Number(localStorage.getItem('coolsolve-editor-font-size')) || DEFAULT_EDITOR_FONT_SIZE,
   forceAppBg: localStorage.getItem('coolsolve-force-app-bg') === 'true',
   settingsTab: 'appearance',
   activityMode: 'code',
-  leftPanelOpen: false,
   leftPanelWidth: Number(localStorage.getItem('coolsolve-left-width')) || 240,
-  palette: localStorage.getItem('coolsolve-palette') || 'default',
+  palette: savedPalette,
   rightTab: 'variables',
   rightPanelOpen: true,
+  bottomTab: 'console',
+  debugFile: null,
   bottomPanelOpen: true,
   consolePosition: (localStorage.getItem('coolsolve-console-pos') as 'bottom' | 'rhs') || 'rhs',
   minimap: localStorage.getItem('coolsolve-minimap') !== 'false',
@@ -93,7 +97,6 @@ export const useUIStore = create<UIState>((set) => ({
   stickyScroll: localStorage.getItem('coolsolve-sticky-scroll') !== 'false',
   showUnderlines: localStorage.getItem('coolsolve-show-underlines') !== 'false',
   activeModal: null,
-  splitPosition: 58,
 
   setTheme: (theme) => {
     localStorage.setItem('coolsolve-theme', theme);
@@ -108,8 +111,10 @@ export const useUIStore = create<UIState>((set) => ({
     set({ accent });
   },
   setEditorTheme: (editorTheme) => {
-    localStorage.setItem('coolsolve-editor-theme', editorTheme);
-    set({ editorTheme });
+    const family = editorTheme.replace(/-(dark|light)$/, '');
+    localStorage.setItem('coolsolve-editor-theme', family);
+    localStorage.setItem('coolsolve-palette', family);
+    set({ editorTheme: family, palette: family });
   },
   setEditorFont: (editorFont) => {
     localStorage.setItem('coolsolve-editor-font', editorFont);
@@ -147,18 +152,10 @@ export const useUIStore = create<UIState>((set) => ({
   setSettingsTab: (settingsTab) => set({ settingsTab }),
   openSettings: (tab = 'appearance') => set({ activeModal: 'settings', settingsTab: tab }),
   setPalette: (palette) => {
-    localStorage.setItem('coolsolve-palette', palette);
-    const nextTheme = palette === 'light' ? 'light' : 'dark';
-    localStorage.setItem('coolsolve-theme', nextTheme);
-    const paletteToEditorTheme: Record<string, string> = {
-      default: 'default',
-      onedark: 'onedark',
-      nord: 'nord',
-      dracula: 'dracula',
-    };
-    const nextEditorTheme = paletteToEditorTheme[palette] || 'default';
-    localStorage.setItem('coolsolve-editor-theme', nextEditorTheme);
-    set({ palette, theme: nextTheme, themeMode: nextTheme, editorTheme: nextEditorTheme });
+    const family = palette.replace(/-(dark|light)$/, '');
+    localStorage.setItem('coolsolve-palette', family);
+    localStorage.setItem('coolsolve-editor-theme', family);
+    set({ palette: family, editorTheme: family });
   },
   setLeftPanelWidth: (leftPanelWidth) => {
     localStorage.setItem('coolsolve-left-width', String(leftPanelWidth));
@@ -166,18 +163,18 @@ export const useUIStore = create<UIState>((set) => ({
   },
   toggleTheme: () =>
     set((s) => {
-      const nextPalette = s.palette === 'light' ? 'default' : 'light';
-      const nextTheme = nextPalette === 'light' ? 'light' : 'dark';
-      localStorage.setItem('coolsolve-palette', nextPalette);
+      const nextTheme = s.theme === 'dark' ? 'light' : 'dark';
       localStorage.setItem('coolsolve-theme', nextTheme);
-      return { palette: nextPalette, theme: nextTheme, themeMode: nextTheme };
+      return { theme: nextTheme, themeMode: nextTheme };
     }),
-  setActivityMode: (activityMode) => set({ activityMode, leftPanelOpen: activityMode !== 'code' }),
-  setLeftPanelOpen: (leftPanelOpen) => set((s) => (s.activityMode === 'code' ? s : { leftPanelOpen })),
-  toggleLeftPanel: () => set((s) => (s.activityMode === 'code' ? s : { leftPanelOpen: !s.leftPanelOpen })),
+  setActivityMode: (activityMode) => set({ activityMode }),
   setRightTab: (tab) => set({ rightTab: tab, rightPanelOpen: true }),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
+  setBottomTab: (bottomTab) => set({ bottomTab, bottomPanelOpen: true }),
+  openDebugFile: (name, content, loading = false) =>
+    set({ debugFile: { name, content, loading }, bottomTab: 'debug', bottomPanelOpen: true }),
+  closeDebugFile: () => set({ debugFile: null, bottomTab: 'console' }),
   setBottomPanelOpen: (open) => set({ bottomPanelOpen: open }),
   toggleBottomPanel: () => set((s) => ({ bottomPanelOpen: !s.bottomPanelOpen })),
   setConsolePosition: (consolePosition) => {
@@ -231,7 +228,6 @@ export const useUIStore = create<UIState>((set) => ({
     set({ showUnderlines });
   },
   setActiveModal: (modal) => set({ activeModal: modal }),
-  setSplitPosition: (pos) => set({ splitPosition: pos }),
 }));
 
 // Follow the OS while in 'system' mode.

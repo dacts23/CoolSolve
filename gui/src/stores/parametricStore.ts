@@ -1,12 +1,21 @@
 import { create } from 'zustand';
 import type {
   SweepVariable,
-  ParametricStudyResult,
   SavedParametricStudy,
 } from '../api/types';
-import { api } from '../api/client';
-import { withSession } from '../api/session';
-import { useModelStore } from './modelStore';
+import { api } from '../api/client.ts';
+import { withSession } from '../api/session.ts';
+import { useModelStore } from './modelStore.ts';
+
+/** Max sweep points per run: every point is one full solve. */
+const MAX_STEPS = 10000;
+
+/** Parse a Steps field: blank means the default 10, anything else must be 1..MAX_STEPS. */
+function parseSteps(raw: string): number | null {
+  if (!raw.trim()) return 10;
+  const n = parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_STEPS ? n : null;
+}
 
 export function linspace(min: number, max: number, n: number): number[] {
   if (n <= 1) return [min];
@@ -19,6 +28,7 @@ export function makeId(): string {
 }
 
 export function fmt(val: number): string {
+  if (!Number.isFinite(val)) return '-';
   if (Number.isInteger(val) && Math.abs(val) < 1e9) return val.toString();
   if (Math.abs(val) < 0.01 || Math.abs(val) >= 1e6) return val.toExponential(4);
   return val.toPrecision(5);
@@ -40,8 +50,6 @@ interface ParametricState {
   running: boolean;
   progress: string;
   error: string;
-  activeResult: ParametricStudyResult | null;
-  activeStudyId: string | null;
   plotXVar: string;
   plotYVar: string;
   plotType: 'line' | 'contour';
@@ -78,8 +86,6 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
   running: false,
   progress: '',
   error: '',
-  activeResult: null,
-  activeStudyId: null,
   plotXVar: '',
   plotYVar: '',
   plotType: 'line',
@@ -106,23 +112,35 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
     } = get();
 
     if (running) return;
+    if (useModelStore.getState().solving) {
+      set({ error: 'Cannot run parametric sweep while a solve calculation is in progress.' });
+      return;
+    }
 
     const sweeps: SweepVariable[] = [];
-    const n1 = parseInt(var1Steps, 10) || 10;
+    const n1 = parseSteps(var1Steps);
     const min1 = parseFloat(var1Min);
     const max1 = parseFloat(var1Max);
     if (!var1Name || isNaN(min1) || isNaN(max1)) {
       set({ error: 'Please select a variable and enter valid min/max for Sweep 1.' });
       return;
     }
+    if (n1 === null) {
+      set({ error: `Sweep 1 steps must be a whole number between 1 and ${MAX_STEPS}.` });
+      return;
+    }
     sweeps.push({ name: var1Name, values: linspace(min1, max1, n1) });
 
     if (var2Name) {
-      const n2 = parseInt(var2Steps, 10) || 10;
+      const n2 = parseSteps(var2Steps);
       const min2 = parseFloat(var2Min);
       const max2 = parseFloat(var2Max);
       if (isNaN(min2) || isNaN(max2)) {
         set({ error: 'Please enter valid min/max for Sweep 2.' });
+        return;
+      }
+      if (n2 === null) {
+        set({ error: `Sweep 2 steps must be a whole number between 1 and ${MAX_STEPS}.` });
         return;
       }
       sweeps.push({ name: var2Name, values: linspace(min2, max2, n2) });
@@ -132,11 +150,15 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
       error: '',
       running: true,
       progress: 'Starting parametric study...',
-      activeResult: null,
-      activeStudyId: null,
     });
 
     try {
+      // Push the whole model so the sweep runs what the editor shows.
+      const { eescode, initials, conf } = useModelStore.getState();
+      await api.putEescode(eescode);
+      await api.putInitials(initials);
+      await api.putConf(conf);
+
       const timeoutSec = Math.max(0, Math.round(parseFloat(timeout) || 0));
       await api.runParametricStudy(sweeps, {
         timeout: timeoutSec,
@@ -160,7 +182,9 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
             activeEventSource = null;
             api.getParametricResult()
               .then((result) => {
-                set({ activeResult: result, running: false, progress: '' });
+                set({ running: false, progress: '' });
+                const model = useModelStore.getState();
+                model.setParametricResult(result);
                 const study: SavedParametricStudy = {
                   id: makeId(),
                   name: sweeps.map((s) => s.name).join(' × '),
@@ -168,8 +192,8 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
                   result,
                   timestamp: Date.now(),
                 };
-                useModelStore.getState().addParametricStudy(study);
-                set({ activeStudyId: study.id });
+                model.addParametricStudy(study);
+                model.setActiveStudyId(study.id);
               })
               .catch((err) => {
                 set({ error: 'Failed to fetch results: ' + err.message, running: false });
@@ -180,7 +204,8 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
             set({ error: data.message || 'Parametric study failed' });
             api.getParametricResult()
               .then((result) => {
-                set({ activeResult: result, running: false });
+                set({ running: false });
+                useModelStore.getState().setParametricResult(result);
                 if (result.successCount > 0) {
                   const study: SavedParametricStudy = {
                     id: makeId(),
@@ -189,8 +214,9 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
                     result,
                     timestamp: Date.now(),
                   };
-                  useModelStore.getState().addParametricStudy(study);
-                  set({ activeStudyId: study.id });
+                  const model = useModelStore.getState();
+                  model.addParametricStudy(study);
+                  model.setActiveStudyId(study.id);
                 }
               })
               .catch(() => {
@@ -198,6 +224,7 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
               });
           }
         } catch {
+          // Ignore parse errors on malformed SSE frames
         }
       };
 
@@ -207,7 +234,8 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
         if (get().running) {
           api.getParametricResult()
             .then((result) => {
-              set({ activeResult: result, running: false });
+              set({ running: false });
+              useModelStore.getState().setParametricResult(result);
             })
             .catch(() => {
               set({ error: 'Lost connection during parametric study.', running: false });
@@ -231,14 +259,13 @@ export const useParametricStore = create<ParametricState>((set, get) => ({
       }
       set({ running: false, progress: 'Stopped.' });
     } catch {
+      // Ignore cancel errors if solver already stopped
     }
   },
 
   loadStudy: (study: SavedParametricStudy) => {
-    set({
-      activeResult: study.result,
-      activeStudyId: study.id,
-    });
+    useModelStore.getState().setParametricResult(study.result);
+    useModelStore.getState().setActiveStudyId(study.id);
     if (study.sweepVariables[0]) {
       const s = study.sweepVariables[0];
       set({

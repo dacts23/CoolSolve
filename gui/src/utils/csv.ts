@@ -1,4 +1,104 @@
-import { saveFileWithPicker } from './fileSave';
+import { saveFileWithPicker } from './fileSave.ts';
+import type { IntegralTableData } from '../api/types.ts';
+
+/**
+ * Parse one CSV text into rows of cells. Handles quoted cells that contain
+ * commas, escaped quotes ("") or line breaks. Blank lines are skipped.
+ */
+export function parseCSV(csv: string): string[][] {
+  const rows: string[][] = [];
+  let cells: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  // A quote or comma proves the row is data, not a blank line.
+  let rowTouched = false;
+
+  const endCell = () => {
+    cells.push(current.trim());
+    current = '';
+  };
+  const endRow = () => {
+    endCell();
+    if (cells.length > 1 || cells[0] !== '' || rowTouched) rows.push(cells);
+    cells = [];
+    rowTouched = false;
+  };
+
+  for (let i = 0; i < csv.length; i++) {
+    const ch = csv[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (csv[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch; // line breaks belong to the cell
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+      rowTouched = true;
+    } else if (ch === ',') {
+      rowTouched = true;
+      endCell();
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && csv[i + 1] === '\n') i++;
+      endRow();
+    } else {
+      current += ch;
+    }
+  }
+  if (current !== '' || cells.length > 0 || rowTouched) endRow();
+  return rows;
+}
+
+export function serializeCSV(rows: string[][]): string {
+  return rows
+    .map((row) =>
+      row
+        .map((cell) => {
+          if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {
+            return `"${cell.replace(/"/g, '""')}"`;
+          }
+          return cell;
+        })
+        .join(',')
+    )
+    .join('\r\n');
+}
+
+/** Parse a CSV string (header row + numeric rows) into IntegralTableData. */
+export function parseCSVToTable(csv: string, csvName: string): IntegralTableData | null {
+  if (!csv || !csv.trim()) return null;
+  const rows = parseCSV(csv);
+  if (rows.length < 2) return null;
+
+  const header = rows[0];
+  if (header.length === 0) return null;
+
+  const data: Record<string, number[]> = {};
+  for (const col of header) data[col] = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const cells = rows[i];
+    for (let c = 0; c < header.length; c++) {
+      const raw = cells[c] ?? '';
+      const num = Number(raw);
+      data[header[c]].push(Number.isFinite(num) ? num : NaN);
+    }
+  }
+
+  const numRows = data[header[0]].length;
+  return {
+    integrationVar: header[0],
+    columns: header,
+    data,
+    numRows,
+    csvName,
+  };
+}
 
 function escapeCsvCell(val: string | number | undefined | null): string {
   if (val === undefined || val === null) return '';

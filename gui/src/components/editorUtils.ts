@@ -163,3 +163,14 @@ export function triggerEditorAction(actionId: string): void {
   editorInstance.focus();
   editorInstance.trigger('menu', actionId, null);
 }
+
+/** Reveal and focus a specific 1-based line and column in the Monaco editor. */
+export function jumpToLine(line: number, column = 1): void {
+  if (useUIStore.getState().activityMode !== 'code') {
+    useUIStore.getState().setActivityMode('code');
+  }
+  if (!editorInstance || line <= 0) return;
+  editorInstance.revealLineInCenter(line);
+  editorInstance.setPosition({ lineNumber: line, column: Math.max(1, column) });
+  editorInstance.focus();
+}

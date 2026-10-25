@@ -1,39 +1,9 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
+import { parseKeyValueText, updateKeyValueLines } from '../utils/conf';
+import { fmt } from '../stores/parametricStore';
 import type { VariableInfo } from '../api/types';
-
-function formatValue(val: number): string {
-  if (Number.isInteger(val) && Math.abs(val) < 1e9) return val.toString();
-  if (Math.abs(val) < 0.01 || Math.abs(val) >= 1e6) return val.toExponential(6);
-  return val.toPrecision(7);
-}
-
-/** Parse initials text (name=value # comment) into a Map */
-function parseInitials(text: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx < 0) continue;
-    const name = trimmed.substring(0, eqIdx).trim();
-    let rest = trimmed.substring(eqIdx + 1);
-    const hashIdx = rest.indexOf('#');
-    if (hashIdx >= 0) rest = rest.substring(0, hashIdx);
-    map.set(name, rest.trim());
-  }
-  return map;
-}
-
-/** Rebuild initials text from the map */
-function serializeInitials(map: Map<string, string>): string {
-  const lines: string[] = [];
-  for (const [name, value] of map) {
-    lines.push(`${name}=${value}`);
-  }
-  return lines.join('\n') + '\n';
-}
 
 /** Build a case-insensitive lookup map from parsedVariables */
 function buildParsedMap(parsed: VariableInfo[]): Map<string, VariableInfo> {
@@ -67,7 +37,7 @@ export default function VariableTable() {
   const parsedVariables = useModelStore((s) => s.parsedVariables);
   const userUnitOverrides = useModelStore((s) => s.userUnitOverrides);
 
-  const initialsMap = useMemo(() => parseInitials(initials), [initials]);
+  const initialsMap = useMemo(() => parseKeyValueText(initials), [initials]);
   const parsedMap = useMemo(() => buildParsedMap(parsedVariables), [parsedVariables]);
 
   /** Get effective unit for a variable: user override > parsed */
@@ -103,7 +73,7 @@ export default function VariableTable() {
     for (const [name, val] of Object.entries(lastResult.variables)) {
       vars.push({
         name,
-        value: formatValue(val),
+        value: fmt(val),
         initial: initialsMap.get(name) ?? '',
         isArray: name.includes('['),
         isString: false,
@@ -154,17 +124,11 @@ export default function VariableTable() {
 
   const commitEdit = useCallback((name: string) => {
     setEditingCell(null);
-    const newMap = new Map(initialsMap);
     const trimmed = editValue.trim();
-    if (trimmed === '') {
-      newMap.delete(name);
-    } else {
-      newMap.set(name, trimmed);
-    }
-    const newText = serializeInitials(newMap);
+    const newText = updateKeyValueLines(initials, { [name]: trimmed || undefined });
     setInitials(newText);
     api.putInitials(newText).catch(() => {});
-  }, [editValue, initialsMap, setInitials]);
+  }, [editValue, initials, setInitials]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent, name: string) => {
     if (e.key === 'Enter') {

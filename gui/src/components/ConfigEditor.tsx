@@ -1,9 +1,9 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useModelStore } from '../stores/modelStore';
-import { api } from '../api/client';
 import { RotateCcw, Info } from 'lucide-react';
 import Tooltip from './Tooltip';
 import Select from './Select';
+import { parseKeyValueText, updateKeyValueLines } from '../utils/conf';
 
 interface ConfigField {
   key: string;
@@ -527,28 +527,6 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
   },
 ];
 
-/** Parse conf text into key→value map */
-function parseConf(text: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq < 0) continue;
-    map.set(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-  }
-  return map;
-}
-
-/** Serialize key→value map to conf text */
-function serializeConf(map: Map<string, string>): string {
-  const lines: string[] = ['# CoolSolve solver configuration'];
-  for (const [key, val] of map) {
-    lines.push(`${key} = ${val}`);
-  }
-  return lines.join('\n') + '\n';
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline group — custom dropdown component.
 // Reused for both the main solver pipeline and the Deep Search pipeline:
@@ -644,9 +622,10 @@ function PipelineGroup({
 export default function ConfigEditor() {
   const conf = useModelStore((s) => s.conf);
   const setConf = useModelStore((s) => s.setConf);
+  const scheduleConfPut = useModelStore((s) => s.scheduleConfPut);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const confMap = useMemo(() => parseConf(conf), [conf]);
+  const confMap = useMemo(() => parseKeyValueText(conf), [conf]);
 
   const toggleGroup = useCallback((title: string) => {
     setCollapsed((prev) => {
@@ -659,40 +638,24 @@ export default function ConfigEditor() {
 
   const handleChange = useCallback(
     (key: string, value: string) => {
-      const newMap = new Map(confMap);
-      if (value === '' || value === undefined) {
-        newMap.delete(key);
-      } else {
-        newMap.set(key, value);
-      }
-      const text = serializeConf(newMap);
-      setConf(text);
-      api.putConf(text).catch(() => {});
+      setConf(updateKeyValueLines(conf, { [key]: value }));
+      scheduleConfPut();
     },
-    [confMap, setConf]
+    [conf, setConf, scheduleConfPut]
   );
 
   const handleBatchChange = useCallback(
     (changes: Record<string, string>) => {
-      const newMap = new Map(confMap);
-      for (const [key, value] of Object.entries(changes)) {
-        if (value === '' || value === undefined) {
-          newMap.delete(key);
-        } else {
-          newMap.set(key, value);
-        }
-      }
-      const text = serializeConf(newMap);
-      setConf(text);
-      api.putConf(text).catch(() => {});
+      setConf(updateKeyValueLines(conf, changes));
+      scheduleConfPut();
     },
-    [confMap, setConf]
+    [conf, setConf, scheduleConfPut]
   );
 
   const handleReset = useCallback(() => {
     setConf('');
-    api.putConf('').catch(() => {});
-  }, [setConf]);
+    scheduleConfPut();
+  }, [setConf, scheduleConfPut]);
 
   return (
     <div className="config-editor">
