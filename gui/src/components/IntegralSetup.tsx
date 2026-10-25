@@ -1,12 +1,10 @@
 import { useMemo, useCallback } from 'react';
-import { Sigma, RotateCcw, Plus } from 'lucide-react';
+import { Sigma, RotateCcw } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
-import { useUIStore } from '../stores/uiStore';
-import { api } from '../api/client';
 import Select from './Select';
-import { insertAtCursor } from './editorUtils';
+import { SetupShell } from './SetupShell';
 import { parseKeyValueText, updateKeyValueLines } from '../utils/conf';
-import { parseCSVToTable } from '../utils/csv';
+import { resolveIntegralTable } from '../utils/integralTable.ts';
 import type { IntegralTableData } from '../api/types';
 
 const INTEGRAL_KEYS = [
@@ -27,9 +25,6 @@ export default function IntegralSetup() {
   const conf = useModelStore((s) => s.conf);
   const setConf = useModelStore((s) => s.setConf);
   const scheduleConfPut = useModelStore((s) => s.scheduleConfPut);
-  const eescode = useModelStore((s) => s.eescode);
-  const setEescode = useModelStore((s) => s.setEescode);
-  const setActivityMode = useUIStore((s) => s.setActivityMode);
 
   const confMap = useMemo(() => parseKeyValueText(conf), [conf]);
   const method = confMap.get('integralMethod') || 'RK4';
@@ -50,26 +45,10 @@ export default function IntegralSetup() {
     scheduleConfPut();
   }, [conf, setConf, scheduleConfPut]);
 
-  const handleInsertSnippet = (snippet: string) => {
-    setActivityMode('code');
-    setTimeout(() => {
-      if (eescode.trim()) {
-        insertAtCursor(snippet + '\n');
-      } else {
-        setEescode(snippet + '\n');
-        api.putEescode(snippet + '\n').catch(() => {});
-      }
-    }, 30);
-  };
-
-  const table = useMemo<IntegralTableData | null>(() => {
-    if (integralTable && integralTable.numRows > 0) return integralTable;
-    if (integralCSV) {
-      const name = integralTable?.csvName ?? 'model-integral.csv';
-      return parseCSVToTable(integralCSV, name);
-    }
-    return null;
-  }, [integralTable, integralCSV]);
+  const table = useMemo<IntegralTableData | null>(
+    () => resolveIntegralTable(integralTable, integralCSV),
+    [integralTable, integralCSV]
+  );
 
   const rowStyle: React.CSSProperties = {
     display: 'flex',
@@ -91,15 +70,7 @@ export default function IntegralSetup() {
   };
 
   return (
-    <div className="parametric-setup-sidebar">
-      <div className="explorer-header">
-        <div className="explorer-title-group">
-          <Sigma size={14} className="accent-icon" />
-          <span className="explorer-title">INTEGRAL TRAJECTORY</span>
-        </div>
-      </div>
-
-      <div className="parametric-setup-content">
+    <SetupShell icon={<Sigma size={14} className="accent-icon" />} title="INTEGRAL TRAJECTORY">
         <div className="parametric-section">
           <div className="parametric-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>INTEGRATOR SETTINGS</span>
@@ -273,29 +244,6 @@ export default function IntegralSetup() {
             </div>
           </div>
         )}
-
-        <div className="parametric-section">
-          <div className="parametric-section-title">QUICK INSERT</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <button
-              className="table-btn-pill"
-              style={{ justifyContent: 'flex-start' }}
-              onClick={() => handleInsertSnippet('y = y_0 + INTEGRAL(dydt, t, 0, 10)')}
-              title="Insert ODE state equation into editor"
-            >
-              <Plus size={11} /> <code>INTEGRAL(dydt, t, t0, tf)</code>
-            </button>
-            <button
-              className="table-btn-pill"
-              style={{ justifyContent: 'flex-start' }}
-              onClick={() => handleInsertSnippet('$IntegralTable t: y, dydt')}
-              title="Insert $IntegralTable directive into editor"
-            >
-              <Plus size={11} /> <code>$IntegralTable t: y, dydt</code>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </SetupShell>
   );
 }

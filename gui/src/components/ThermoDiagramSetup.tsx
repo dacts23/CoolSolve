@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { Play, Loader2 } from 'lucide-react';
 import ThermoDiagramIcon from './ThermoDiagramIcon';
 import Select, { type SelectOption } from './Select';
+import { SetupShell } from './SetupShell';
 import { extractArrayColumns } from '../utils/arrayData';
 import { useDiagramStore, type DiagramType, DIAGRAM_TYPE_OPTIONS } from '../stores/diagramStore';
 import { useModelStore } from '../stores/modelStore';
@@ -52,10 +53,13 @@ export default function ThermoDiagramSetup() {
   );
 
   const arrayColOptions = useMemo(() => {
-    return [...arrayColumns.keys()].sort().map((base) => ({
-      value: base,
-      label: `${base} (${arrayColumns.get(base)!.length} pts)`,
-    }));
+    return [...arrayColumns.keys()].sort().map((base) => {
+      const pts = arrayColumns.get(base)!.filter((v) => Number.isFinite(v)).length;
+      return {
+        value: base,
+        label: `${base} (${pts} pts)`,
+      };
+    });
   }, [arrayColumns]);
 
   const sortedFluids = useMemo(() => {
@@ -81,15 +85,7 @@ export default function ThermoDiagramSetup() {
   }, [modelFluids, sortedFluids]);
 
   return (
-    <div className="parametric-setup-sidebar">
-      <div className="explorer-header">
-        <div className="explorer-title-group">
-          <ThermoDiagramIcon size={14} className="accent-icon" />
-          <span className="explorer-title">PROPERTY DIAGRAMS</span>
-        </div>
-      </div>
-
-      <div className="parametric-setup-content">
+    <SetupShell icon={<ThermoDiagramIcon size={14} className="accent-icon" />} title="PROPERTY DIAGRAMS">
         <div className="parametric-section">
           <div className="parametric-section-title">WORKING FLUID</div>
           <Select
@@ -199,7 +195,6 @@ export default function ThermoDiagramSetup() {
             {error}
           </div>
         )}
-      </div>
-    </div>
+    </SetupShell>
   );
 }

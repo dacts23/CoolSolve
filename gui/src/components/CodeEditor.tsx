@@ -4,7 +4,7 @@ import { X, Plus, FileCode, ChevronLeft, ChevronRight, Play, Bug, Square, Zap } 
 import type * as Monaco from 'monaco-editor';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { registerEESLanguage, EES_LANGUAGE_ID } from '../languages/ees';
-import { defineEditorThemes, resolveEditorTheme, getActiveEditorBg } from '../languages/editorThemes';
+import { defineEditorThemes, ensureEditorTheme, resolveEditorTheme, getActiveEditorBg } from '../languages/editorThemes';
 import { useModelStore, tabHasResults } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { fontCss, DEFAULT_EDITOR_FONT_SIZE } from '../utils/appearance';
@@ -28,6 +28,7 @@ export default function CodeEditor() {
   const stepEditorFontSize = useUIStore((s) => s.stepEditorFontSize);
   const forceAppBg = useUIStore((s) => s.forceAppBg);
   const minimap = useUIStore((s) => s.minimap);
+  const minimapSliderAlways = useUIStore((s) => s.minimapSliderAlways);
   const wordWrap = useUIStore((s) => s.wordWrap);
   const stickyScroll = useUIStore((s) => s.stickyScroll);
   const showUnderlines = useUIStore((s) => s.showUnderlines);
@@ -53,8 +54,8 @@ export default function CodeEditor() {
   const [othersToClose, setOthersToClose] = useState<string | null>(null);
   const [tabToSwitchTo, setTabToSwitchTo] = useState<string | null>(null);
 
-  // Switching files keeps each file's results, but the table grid's unsaved
-  // cell edits live only on screen: warn before dropping them.
+  // Switching files parks code/initials/conf and results in openTabs, but
+  // unsaved lookup-table grid cell edits live only in the mounted TableGrid.
   const requestSwitchTab = useCallback((id: string) => {
     if (id === activeTabId) return;
     if (useModelStore.getState().lookupTableDirty) {
@@ -116,6 +117,7 @@ export default function CodeEditor() {
   const monacoRef = useRef<typeof Monaco | null>(null);
   const parseTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const parseSeqRef = useRef(0);
+  const editorDisposables = useRef<{ dispose(): void }[]>([]);
 
   const activeEditorBg = getActiveEditorBg(editorTheme, theme, forceAppBg, palette);
   const activeMonacoTheme = resolveEditorTheme(editorTheme, theme, forceAppBg, palette);
@@ -125,10 +127,22 @@ export default function CodeEditor() {
     const monaco = monacoRef.current || (window as unknown as { monaco?: typeof Monaco }).monaco;
     if (monaco) {
       defineEditorThemes(monaco);
+      ensureEditorTheme(monaco, activeMonacoTheme);
       monaco.editor.setTheme(activeMonacoTheme);
     }
   }, [activeMonacoTheme]);
 
+  // Clear pending parse on unmount: prevents setState after unmount.
+  useEffect(() => {
+    const disposables = editorDisposables.current;
+    return () => {
+      if (parseTimeoutRef.current) clearTimeout(parseTimeoutRef.current);
+      for (const d of disposables.splice(0)) {
+        try { d.dispose(); } catch { /* already disposed */ }
+      }
+      editorRef.current = null;
+    };
+  }, []);
   // Dismiss context menu on click outside or Escape
   useEffect(() => {
     if (!contextMenu) return;
@@ -184,11 +198,17 @@ export default function CodeEditor() {
     editorRef.current = editor;
     monacoRef.current = monaco;
     setEditorInstance(editor);
-    editor.onDidChangeCursorPosition((e) => setCursor({ line: e.position.lineNumber, col: e.position.column }));
-    editor.onDidChangeCursorSelection((e) => {
-      const m = editor.getModel();
-      setSelLen(m ? m.getValueInRange(e.selection).length : 0);
-    });
+    // Dispose stale subscriptions from a previous mount before adding new ones.
+    for (const d of editorDisposables.current.splice(0)) {
+      try { d.dispose(); } catch { /* already disposed */ }
+    }
+    editorDisposables.current.push(
+      editor.onDidChangeCursorPosition((e) => setCursor({ line: e.position.lineNumber, col: e.position.column })),
+      editor.onDidChangeCursorSelection((e) => {
+        const m = editor.getModel();
+        setSelLen(m ? m.getValueInRange(e.selection).length : 0);
+      }),
+    );
 
     if (!languageRegistered) {
       registerEESLanguage(monaco);
@@ -201,41 +221,43 @@ export default function CodeEditor() {
       monaco.editor.setModelLanguage(model, EES_LANGUAGE_ID);
     }
     defineEditorThemes(monaco);
-    monaco.editor.setTheme(resolveEditorTheme(editorTheme, theme, forceAppBg, palette));
+    const initialTheme = resolveEditorTheme(editorTheme, theme, forceAppBg, palette);
+    ensureEditorTheme(monaco, initialTheme);
+    monaco.editor.setTheme(initialTheme);
 
     // Register comment toggle actions
-    editor.addAction({
+    editorDisposables.current.push(editor.addAction({
       id: 'coolsolve.toggleBraceComment',
       label: 'Toggle { } Comment',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash],
       run: () => toggleBraceComment(editor),
-    });
-    editor.addAction({
+    }));
+    editorDisposables.current.push(editor.addAction({
       id: 'coolsolve.toggleQuoteComment',
       label: 'Toggle " " Comment',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Slash],
       run: () => toggleQuoteComment(editor),
-    });
+    }));
 
     // Zoom keybindings stepping across standard font sizes
-    editor.addAction({
+    editorDisposables.current.push(editor.addAction({
       id: 'coolsolve.zoomIn',
       label: 'Zoom In (Increase Font Size)',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Equal, monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadAdd],
       run: () => stepEditorFontSize(1),
-    });
-    editor.addAction({
+    }));
+    editorDisposables.current.push(editor.addAction({
       id: 'coolsolve.zoomOut',
       label: 'Zoom Out (Decrease Font Size)',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Minus, monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadSubtract],
       run: () => stepEditorFontSize(-1),
-    });
-    editor.addAction({
+    }));
+    editorDisposables.current.push(editor.addAction({
       id: 'coolsolve.zoomReset',
       label: 'Reset Zoom (Default Font Size)',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Digit0, monaco.KeyMod.CtrlCmd | monaco.KeyCode.Numpad0],
       run: () => setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE),
-    });
+    }));
 
     // Focus editor
     editor.focus();
@@ -280,7 +302,8 @@ export default function CodeEditor() {
                   startLineNumber: err.line,
                   startColumn: err.column || 1,
                   endLineNumber: err.line,
-                  endColumn: (err.column || 1) + 10,
+                  // Point marker (no span info from backend): +1 avoids covering 10 chars.
+                  endColumn: (err.column || 1) + 1,
                   message: err.message,
                 }));
                 // Add diagnostic markers (warnings/info from P002, P003, etc.)
@@ -294,7 +317,7 @@ export default function CodeEditor() {
                       startLineNumber: d.line || 1,
                       startColumn: d.column || 1,
                       endLineNumber: d.line || 1,
-                      endColumn: (d.column || 1) + 10,
+                      endColumn: (d.column || 1) + 1,
                       message: `[${d.code}] ${d.message}`,
                     });
                   }
@@ -327,6 +350,7 @@ export default function CodeEditor() {
   const handleChange = useCallback(
     (value: string | undefined) => {
       setEescode(value || '');
+      useModelStore.getState().scheduleEescodePut();
     },
     [setEescode]
   );
@@ -502,7 +526,10 @@ export default function CodeEditor() {
       {contextMenu && (
         <div
           className="tab-context-menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          style={{
+            top: Math.min(contextMenu.y, window.innerHeight - 160),
+            left: Math.min(contextMenu.x, window.innerWidth - 200),
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           <button
@@ -563,10 +590,9 @@ export default function CodeEditor() {
       {tabToSwitchTo && (
         <ConfirmModal
           title="Discard Unsaved Table Edits?"
-          message="The lookup table has unsaved cell edits. Switching files will discard them — save the table first to keep them."
-          confirmLabel="Discard & Switch"
+          message="The open lookup table has unsaved cell edits. Switching tabs will discard them — save the table first to keep them."
+          confirmLabel="Switch Anyway"
           onConfirm={() => {
-            useModelStore.getState().setLookupTableDirty(false);
             switchTab(tabToSwitchTo);
             setTabToSwitchTo(null);
           }}
@@ -601,7 +627,7 @@ export default function CodeEditor() {
               showMarkSectionHeaders: false,
               showRegionSectionHeaders: false,
               maxColumn: 80,
-              showSlider: 'mouseover',
+              showSlider: minimapSliderAlways ? 'always' : 'mouseover',
             },
             wordWrap: wordWrap ? 'on' : 'off',
             automaticLayout: true,

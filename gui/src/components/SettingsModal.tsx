@@ -3,35 +3,15 @@ import { useUIStore } from '../stores/uiStore';
 import { ACCENTS, APP_PALETTES, EDITOR_FONTS, EDITOR_FONT_SIZES } from '../utils/appearance';
 import { THEME_CHOICES } from '../languages/editorThemes';
 import Select from './Select';
-
-function Row({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
-  return (
-    <div className="settings-row">
-      <div>
-        <div className="settings-title">{title}</div>
-        <div className="settings-hint">{hint}</div>
-      </div>
-      <div className="settings-control">{children}</div>
-    </div>
-  );
-}
-
-function ToggleBtn({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="segmented">
-      <button className={checked ? 'active' : ''} onClick={() => onChange(true)}>On</button>
-      <button className={!checked ? 'active' : ''} onClick={() => onChange(false)}>Off</button>
-    </div>
-  );
-}
+import { PlotRow as Row, PlotToggle as ToggleBtn } from './SetupShell';
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const {
     settingsTab, setSettingsTab,
     theme, palette, accent, editorTheme, editorFont, editorFontSize, forceAppBg,
-    wordWrap, stickyScroll, showUnderlines, minimap,
+    wordWrap, stickyScroll, showUnderlines, minimap, minimapSliderAlways,
     setPalette, setAccent, setEditorTheme, setEditorFont, setEditorFontSize, setForceAppBg,
-    setWordWrap, setStickyScroll, setShowUnderlines, setMinimap,
+    setWordWrap, setStickyScroll, setShowUnderlines, setMinimap, setMinimapSliderAlways,
   } = useUIStore();
 
   return (
@@ -103,7 +83,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 <Row title="Match app background" hint="Keep editor canvas seamlessly integrated with app surface">
                   <ToggleBtn checked={forceAppBg} onChange={setForceAppBg} />
                 </Row>
-                <Row title="Font family" hint="Falls back to Consolas if not installed">
+                <Row title="Font family" hint="Cascadia, JetBrains and Fira are bundled; the rest use system fonts">
                   <Select
                     value={editorFont}
                     options={EDITOR_FONTS}
@@ -130,6 +110,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 </Row>
                 <Row title="Minimap" hint="Show overview code navigation on the right">
                   <ToggleBtn checked={minimap} onChange={setMinimap} />
+                </Row>
+                <Row title="Minimap slider" hint="Always show the viewport box instead of only on hover">
+                  <ToggleBtn checked={minimapSliderAlways} onChange={setMinimapSliderAlways} />
                 </Row>
               </>
             )}

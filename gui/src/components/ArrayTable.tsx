@@ -4,6 +4,8 @@ import { useModelStore } from '../stores/modelStore';
 import { exportArrayTableToCsv } from '../utils/csv';
 import { fmt } from '../stores/parametricStore';
 import { extractArrayGrid } from '../utils/arrayData';
+import { TABLE_PAGE_SIZE, pageCount, clampPage } from '../utils/paging.ts';
+import { TablePager } from './SetupShell';
 
 export default function ArrayTable() {
   const [filter, setFilter] = useState('');
@@ -20,6 +22,15 @@ export default function ArrayTable() {
     const lower = filter.toLowerCase();
     return baseNames.filter((n) => n.toLowerCase().includes(lower));
   }, [baseNames, filter]);
+
+  // Large arrays (10k rows) would create 10k DOM rows: page like other tables.
+  const [page, setPage] = useState(0);
+  const totalPages = pageCount(indices.length, TABLE_PAGE_SIZE);
+  const safePage = clampPage(page, indices.length, TABLE_PAGE_SIZE);
+  const pagedIndices = useMemo(
+    () => indices.slice(safePage * TABLE_PAGE_SIZE, (safePage + 1) * TABLE_PAGE_SIZE),
+    [indices, safePage]
+  );
 
   const handleExportCsv = useCallback(() => {
     if (baseNames.length === 0 || indices.length === 0) return;
@@ -64,7 +75,7 @@ export default function ArrayTable() {
             </tr>
           </thead>
           <tbody>
-            {indices.map((idx) => (
+            {pagedIndices.map((idx) => (
               <tr key={idx}>
                 <td style={{ fontWeight: 600 }}>{idx}</td>
                 {filteredBaseNames.map((name) => {
@@ -80,6 +91,7 @@ export default function ArrayTable() {
           </tbody>
         </table>
       </div>
+      <TablePager page={safePage} totalPages={totalPages} onPageChange={setPage} />
       <div className="table-footer-status">
         {filteredBaseNames.length} array{filteredBaseNames.length !== 1 ? 's' : ''} × {indices.length} indices
       </div>

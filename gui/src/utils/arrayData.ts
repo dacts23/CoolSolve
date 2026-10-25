@@ -9,11 +9,17 @@ export function extractArrayGrid(variables?: Record<string, number>) {
     return { baseNames: [] as string[], indices: [] as number[], grid: new Map<string, Map<number, number>>() };
   }
   const entries: ArrayEntry[] = [];
-  for (const [name, val] of Object.entries(variables)) {
+  for (const [rawName, val] of Object.entries(variables)) {
+    const name = rawName.trim();
     const match = name.match(/^(.+)\[(\d+)(?:,([^\]]+))?\]$/);
     if (match) {
-      const colName = match[3] ? `${match[1]}[i,${match[3]}]` : match[1];
-      entries.push({ baseName: colName, index: parseInt(match[2], 10), value: val });
+      // Nested brackets (A[1][2]) are not EES indexing: skip, don't mis-group.
+      if (match[1].includes('[') || match[1].includes(']')) continue;
+      // EES arrays are 1-based: ignore index 0 and absurd sizes.
+      const idx = parseInt(match[2], 10);
+      if (!Number.isInteger(idx) || idx < 1 || idx > 1000000) continue;
+      const colName = match[3] ? `${match[1]}[i,${match[3].trim()}]` : match[1];
+      entries.push({ baseName: colName, index: idx, value: val });
     }
   }
 
@@ -42,11 +48,9 @@ export function extractArrayColumns(variables?: Record<string, number>): Map<str
   for (const base of baseNames) {
     const colMap = grid.get(base);
     if (!colMap) continue;
-    const vals: number[] = [];
-    for (const idx of indices) {
-      if (colMap.has(idx)) vals.push(colMap.get(idx)!);
-    }
-    result.set(base, vals);
+    // One slot per union index: missing entries stay NaN so columns with
+    // different sparsity still line up by subscript.
+    result.set(base, indices.map((idx) => colMap.get(idx) ?? NaN));
   }
   return result;
 }

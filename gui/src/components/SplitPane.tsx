@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from 'react';
+import { useRef, useCallback, useState, useEffect } from 'react';
 import { startResizeDrag } from '../utils/drag.ts';
 
 interface SplitPaneProps {
@@ -24,14 +24,18 @@ export default function SplitPane({
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(defaultSize);
+  const dragCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => { dragCleanup.current?.(); dragCleanup.current = null; }, []);
 
+  // Size is % of the container; min/max props are px.
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const horizontal = direction === 'horizontal';
-      startResizeDrag(horizontal ? 'col-resize' : 'row-resize', (ev) => {
+      dragCleanup.current?.();
+      dragCleanup.current = startResizeDrag(horizontal ? 'col-resize' : 'row-resize', (ev) => {
         const offset = horizontal ? ev.clientX - rect.left : ev.clientY - rect.top;
         const containerPx = horizontal ? rect.width : rect.height;
         let newSize = (offset / containerPx) * 100;

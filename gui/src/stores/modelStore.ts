@@ -12,6 +12,7 @@ import type {
 } from '../api/types';
 import { api } from '../api/client.ts';
 import { toErrMsg } from '../utils/errors.ts';
+import { isRunBusy } from '../utils/runBusy.ts';
 
 /**
  * Everything a run of a model produces. It lives with its tab: switching files
@@ -31,6 +32,8 @@ export interface TabResults {
   lookupTableCSVs: Record<string, string>; // name → raw CSV content
   selectedLookupTable: string | null;
   resultIsLive: boolean;
+  /** GUI unit overrides belong to the model, so they travel with its tab. */
+  userUnitOverrides: UserUnitOverride[];
 }
 
 export interface EditorTab extends TabResults {
@@ -57,6 +60,7 @@ const NO_RESULTS: TabResults = {
   lookupTableCSVs: {},
   selectedLookupTable: null,
   resultIsLive: false,
+  userUnitOverrides: [],
 };
 
 /** True when this model has any run results worth keeping. */
@@ -66,7 +70,9 @@ export function hasResults(r: TabResults): boolean {
       r.parametricResult ||
       r.parametricStudies.length > 0 ||
       r.integralTable ||
-      r.integralCSV
+      r.integralCSV ||
+      r.lookupTables.length > 0 ||
+      Object.keys(r.lookupTableCSVs).length > 0
   );
 }
 
@@ -116,9 +122,8 @@ interface ModelState extends TabResults {
   /** True while the table grid holds cell edits that were not saved yet. */
   lookupTableDirty: boolean;
   setLookupTableDirty: (dirty: boolean) => void;
-
-  // User unit overrides (GUI-specified units)
-  userUnitOverrides: UserUnitOverride[];
+  /** Bumped on user table create/save/delete (never on read-only CSV cache). */
+  tableRev: number;
 
   // Console log
   consoleLines: string[];
@@ -138,6 +143,8 @@ interface ModelState extends TabResults {
   setParametricResult: (result: ParametricStudyResult | null) => void;
   setActiveStudyId: (id: string | null) => void;
   setSol: (sol: string) => void;
+  /** Write .sol text into one tab (late answers must not land on another tab). */
+  setSolForTab: (tabId: string, sol: string) => void;
   setCanGoBack: (canGoBack: boolean) => void;
   addConsoleLine: (line: string) => void;
   clearConsole: () => void;
@@ -148,34 +155,50 @@ interface ModelState extends TabResults {
     sol: string,
     conf: string,
     modelName?: string,
-    libraryId?: string
+    libraryId?: string,
+    syncServer?: boolean
   ) => void;
   clearModel: () => void;
   addParametricStudy: (study: SavedParametricStudy) => void;
   removeParametricStudy: (id: string) => void;
+  /**
+   * Write run output into one tab's entry (and the flat state when it is the
+   * active tab). Runners capture the tab id at start so late answers cannot
+   * land on a tab the user switched to meanwhile.
+   */
+  patchTabResults: (tabId: string, patch: Partial<TabResults>) => void;
+  /** Save a finished sweep (result grid + study entry + selection) into one tab. */
+  saveParametricStudy: (tabId: string, study: SavedParametricStudy, result: ParametricStudyResult | null) => void;
   setIntegralTable: (table: IntegralTableData | null) => void;
   setIntegralCSV: (csv: string) => void;
   setUserUnit: (variableName: string, units: string) => void;
   setSelectedLookupTable: (name: string | null) => void;
   setLookupTables: (tables: LookupTableInfo[]) => void;
-  setLookupTableCSV: (name: string, csv: string) => void;
+  setLookupTableCSV: (name: string, csv: string, fromCache?: boolean) => void;
   removeLookupTable: (name: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
   /** Write the current conf to the server once typing pauses (not per keystroke). */
   scheduleConfPut: () => void;
+  /** Write the current eescode to the server once typing pauses. Solve/sweep
+   *  push a snapshot directly, so this only keeps refresh/reload from losing
+   *  text that was never pushed. Callers: CodeEditor onChange. */
+  scheduleEescodePut: () => void;
+  /** Drop pending debounced writes (bundle/solve push memory directly). */
+  cancelPendingPuts: () => void;
 }
 
 /**
- * Push one tab's files to the server session. The three writes are queued in
+ * Push one tab's files to the server session. The writes are queued in
  * this order (see api/client.ts), so fast tab switches can never leave the
  * server holding two models mixed together. Failures show in the console.
  */
-function pushFiles(eescode: string, initials: string, conf: string): void {
-  const writes = [
+function pushFiles(eescode: string, initials: string, conf: string, modelName?: string): void {
+  const writes: Promise<unknown>[] = [
     api.putEescode(eescode),
     api.putInitials(initials),
     api.putConf(conf),
   ];
+  if (modelName !== undefined) writes.push(api.setModelName(modelName));
   Promise.all(writes).catch((err) =>
     useModelStore.getState().addConsoleLine(`>>> ERROR saving model to server: ${toErrMsg(err)}`)
   );
@@ -193,6 +216,7 @@ const tabResults = (s: TabResults): TabResults => ({
   lookupTableCSVs: s.lookupTableCSVs,
   selectedLookupTable: s.selectedLookupTable,
   resultIsLive: s.resultIsLive,
+  userUnitOverrides: s.userUnitOverrides,
 });
 
 /** Park the active tab's current content and results into its tab entry. */
@@ -224,6 +248,24 @@ const SWAP_RESET = {
 };
 
 let confPutTimer: ReturnType<typeof setTimeout> | undefined;
+let eescodePutTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Cap open tabs: each holds full text + sweep grids + CSVs. */
+const MAX_TABS = 10;
+function enforceTabCap(tabs: EditorTab[], activeId: string): EditorTab[] {
+  if (tabs.length <= MAX_TABS) return tabs;
+  // Never evict dirty tabs or tabs with results; only drop clean expendable ones.
+  // Tab order is preserved; the oldest expendable tabs are dropped first.
+  const dropCount = tabs.length - MAX_TABS;
+  const toDrop = new Set<string>();
+  for (const t of tabs) {
+    if (toDrop.size >= dropCount) break;
+    if (t.id !== activeId && !t.dirty && !tabHasResults(t)) {
+      toDrop.add(t.id);
+    }
+  }
+  return tabs.filter((t) => !toDrop.has(t.id));
+}
 
 export const useModelStore = create<ModelState>((set, get) => ({
   filePath: '',
@@ -273,8 +315,8 @@ export const useModelStore = create<ModelState>((set, get) => ({
       ),
     })),
 
-  userUnitOverrides: [],
   lookupTableDirty: false,
+  tableRev: 0,
   // Switching tables swaps the grid, so any unsaved cell edits are gone: clear
   // the flag with the selection. Callers must confirm before switching when it
   // is set (see LookupTablesSetup).
@@ -283,14 +325,27 @@ export const useModelStore = create<ModelState>((set, get) => ({
 
   consoleLines: [],
 
-  switchTab: (id) =>
+  switchTab: (id) => {
+    const s = get();
+    if (id === s.activeTabId) return;
+    // All tabs share one server session: swapping files mid-run would solve
+    // the wrong model and attribute the result to the wrong file.
+    if (isRunBusy()) {
+      s.addConsoleLine('>>> Cannot switch files while a run is in progress.');
+      return;
+    }
+    s.cancelPendingPuts();
     set((state) => {
-      if (id === state.activeTabId) return state;
       const target = state.openTabs.find((t) => t.id === id);
       if (!target) return state;
       // Park the outgoing tab's content and results; nothing is deleted.
       const updatedTabs = parkActiveTab(state);
-      pushFiles(target.eescode, target.initials, target.conf);
+      pushFiles(
+        target.eescode,
+        target.initials,
+        target.conf,
+        target.modelName !== state.modelName ? target.modelName : undefined
+      );
       return {
         openTabs: updatedTabs,
         activeTabId: id,
@@ -305,9 +360,16 @@ export const useModelStore = create<ModelState>((set, get) => ({
         ...tabResults(target),
         ...SWAP_RESET,
       };
-    }),
+    });
+  },
 
-  closeTab: (id) =>
+  closeTab: (id) => {
+    const s = get();
+    if (isRunBusy()) {
+      s.addConsoleLine('>>> Cannot close files while a run is in progress.');
+      return;
+    }
+    s.cancelPendingPuts();
     set((state) => {
       const tabIndex = state.openTabs.findIndex((t) => t.id === id);
       if (tabIndex < 0) return state;
@@ -316,7 +378,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
       const parked = parkActiveTab(state);
       const remaining = parked.filter((t) => t.id !== id);
       if (remaining.length === 0) {
-        const blankId = `tab-${Date.now()}`;
+        const blankId = `tab-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
         const blankTab: EditorTab = {
           id: blankId,
           name: 'untitled.eescode',
@@ -330,7 +392,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
           dirty: false,
           ...NO_RESULTS,
         };
-        pushFiles('', '', '');
+        pushFiles('', '', '', state.modelName ? '' : undefined);
         return {
           openTabs: [blankTab],
           activeTabId: blankId,
@@ -350,7 +412,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
       if (id === state.activeTabId) {
         const nextIndex = Math.min(tabIndex, remaining.length - 1);
         const nextTab = remaining[nextIndex];
-        pushFiles(nextTab.eescode, nextTab.initials, nextTab.conf);
+        pushFiles(
+          nextTab.eescode,
+          nextTab.initials,
+          nextTab.conf,
+          nextTab.modelName !== state.modelName ? nextTab.modelName : undefined
+        );
         return {
           openTabs: remaining,
           activeTabId: nextTab.id,
@@ -368,9 +435,16 @@ export const useModelStore = create<ModelState>((set, get) => ({
       }
 
       return { openTabs: remaining };
-    }),
+    });
+  },
 
-  closeOtherTabs: (id) =>
+  closeOtherTabs: (id) => {
+    const s = get();
+    if (isRunBusy()) {
+      s.addConsoleLine('>>> Cannot close files while a run is in progress.');
+      return;
+    }
+    s.cancelPendingPuts();
     set((state) => {
       const target = state.openTabs.find((t) => t.id === id);
       if (!target) return state;
@@ -378,7 +452,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
       // flat state, not in its entry yet.
       const kept = parkActiveTab(state).find((t) => t.id === id);
       if (!kept) return state;
-      pushFiles(kept.eescode, kept.initials, kept.conf);
+      pushFiles(
+        kept.eescode,
+        kept.initials,
+        kept.conf,
+        kept.modelName !== state.modelName ? kept.modelName : undefined
+      );
       return {
         openTabs: [kept],
         activeTabId: kept.id,
@@ -393,7 +472,8 @@ export const useModelStore = create<ModelState>((set, get) => ({
         ...tabResults(kept),
         ...SWAP_RESET,
       };
-    }),
+    });
+  },
 
   renameTab: (id, newName) =>
     set((state) => {
@@ -427,11 +507,18 @@ export const useModelStore = create<ModelState>((set, get) => ({
       return { openTabs: updated };
     }),
 
-  newTab: () =>
+  newTab: () => {
+    const s = get();
+    if (isRunBusy()) {
+      s.addConsoleLine('>>> Cannot create a file while a run is in progress.');
+      return;
+    }
+    s.cancelPendingPuts();
     set((state) => {
       const untitledCount = state.openTabs.filter((t) => t.name.startsWith('untitled')).length;
       const name = untitledCount === 0 ? 'untitled.eescode' : `untitled-${untitledCount + 1}.eescode`;
-      const id = `tab-${Date.now()}`;
+      // Random suffix: two tabs created in the same millisecond must not share an id.
+      const id = `tab-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
       const newTab: EditorTab = {
         id,
         name,
@@ -445,9 +532,9 @@ export const useModelStore = create<ModelState>((set, get) => ({
         dirty: false,
         ...NO_RESULTS,
       };
-      pushFiles('', '', '');
+      pushFiles('', '', '', state.modelName ? '' : undefined);
       return {
-        openTabs: [...parkActiveTab(state), newTab],
+        openTabs: enforceTabCap([...parkActiveTab(state), newTab], id),
         activeTabId: id,
         filePath: '',
         modelName: '',
@@ -460,10 +547,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
         ...NO_RESULTS,
         ...SWAP_RESET,
       };
-    }),
+    });
+  },
 
   setEescode: (code) =>
     set((state) => {
+      // shortcut: dirty stays true after revert-to-saved; upgrade when a disk baseline is tracked.
       const dirty = code !== state.eescode ? true : state.dirty;
       const openTabs = state.openTabs.map((t) =>
         t.id === state.activeTabId ? { ...t, eescode: code, dirty } : t
@@ -472,6 +561,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
     }),
   setInitials: (initials) =>
     set((state) => {
+      // shortcut: dirty stays true after revert-to-saved; upgrade when a disk baseline is tracked.
       const dirty = initials !== state.initials ? true : state.dirty;
       const openTabs = state.openTabs.map((t) =>
         t.id === state.activeTabId ? { ...t, initials, dirty } : t
@@ -480,6 +570,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
     }),
   setConf: (conf) =>
     set((state) => {
+      // shortcut: dirty stays true after revert-to-saved; upgrade when a disk baseline is tracked.
       const dirty = conf !== state.conf ? true : state.dirty;
       const openTabs = state.openTabs.map((t) =>
         t.id === state.activeTabId ? { ...t, conf, dirty } : t
@@ -495,15 +586,19 @@ export const useModelStore = create<ModelState>((set, get) => ({
   setTryHarderAvailable: (available) => set({ tryHarderAvailable: available }),
   setDeepSearchRunning: (running) => set({ deepSearchRunning: running }),
   // A result that arrives from a live run belongs to the model on screen.
-  setSolveResult: (result) => set({ lastResult: result, resultIsLive: true }),
-  setParametricResult: (parametricResult) => set({ parametricResult }),
-  setActiveStudyId: (activeStudyId) => set({ activeStudyId }),
-  setSol: (sol) =>
+  // Flat setters route through the tab-safe writers so late answers use one path.
+  // Runners must still pass the captured tabId (see patchTabResults/setSolForTab).
+  setSolveResult: (result) => get().patchTabResults(get().activeTabId, { lastResult: result, resultIsLive: true }),
+  setParametricResult: (parametricResult) => get().patchTabResults(get().activeTabId, { parametricResult }),
+  setActiveStudyId: (activeStudyId) => get().patchTabResults(get().activeTabId, { activeStudyId }),
+  setSol: (sol) => get().setSolForTab(get().activeTabId, sol),
+  setSolForTab: (tabId, sol) =>
     set((state) => {
       const openTabs = state.openTabs.map((t) =>
-        t.id === state.activeTabId ? { ...t, sol } : t
+        t.id === tabId ? { ...t, sol } : t
       );
-      return { sol, openTabs };
+      if (tabId === state.activeTabId) return { sol, openTabs };
+      return { openTabs };
     }),
   setCanGoBack: (canGoBack) => set({ canGoBack }),
   addConsoleLine: (line) =>
@@ -515,14 +610,15 @@ export const useModelStore = create<ModelState>((set, get) => ({
     })),
   clearConsole: () => set({ consoleLines: [] }),
 
-  loadFile: (path, eescode, initials, sol, conf, modelName, libraryId) =>
+  loadFile: (path, eescode, initials, sol, conf, modelName, libraryId, syncServer = true) => {
+    get().cancelPendingPuts();
     set((state) => {
       const name = modelName
         ? `${modelName}.eescode`
         : path
           ? path.split(/[\\/]/).pop() || 'untitled.eescode'
           : 'untitled.eescode';
-      const id = path || libraryId || (modelName ? `model-${modelName}` : `tab-${Date.now()}`);
+      const id = path || libraryId || (modelName ? `model-${modelName}` : `tab-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`);
 
       // Park the outgoing model's results in its tab: opening a file must not
       // delete the runs of whatever is on screen.
@@ -531,10 +627,11 @@ export const useModelStore = create<ModelState>((set, get) => ({
         (t) => (path && t.filePath === path) || (libraryId && t.libraryId === libraryId) || t.id === id
       );
       let newTabs: EditorTab[];
-      // A reloaded tab keeps its runs; a brand-new tab starts without any.
+      // A reloaded tab keeps its runs and its unit overrides: the new content
+      // brings its own unit annotations, but user overrides stay until changed.
       let results: TabResults = NO_RESULTS;
       if (existingIndex >= 0) {
-        results = tabResults(parked[existingIndex]);
+        results = { ...tabResults(parked[existingIndex]) };
         newTabs = [...parked];
         newTabs[existingIndex] = {
           ...newTabs[existingIndex],
@@ -569,10 +666,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
           dirty: false,
           ...NO_RESULTS,
         };
-        newTabs = isSingleUntouched ? [newTab] : [...parked, newTab];
+        newTabs = isSingleUntouched ? [newTab] : enforceTabCap([...parked, newTab], id);
       }
 
-      pushFiles(eescode, initials, conf);
+      if (syncServer) {
+        pushFiles(eescode, initials, conf, modelName !== state.modelName ? (modelName ?? '') : undefined);
+      }
 
       return {
         filePath: path,
@@ -591,11 +690,13 @@ export const useModelStore = create<ModelState>((set, get) => ({
         openTabs: newTabs,
         activeTabId: id,
       };
-    }),
+    });
+  },
 
   // New Model: deliberately discards the runs of the current model (the UI
   // confirms first), and blanks the active tab entry so they cannot come back.
-  clearModel: () =>
+  clearModel: () => {
+    get().cancelPendingPuts();
     set((state) => ({
       filePath: '',
       modelName: '',
@@ -606,7 +707,6 @@ export const useModelStore = create<ModelState>((set, get) => ({
       conf: '',
       dirty: false,
       consoleLines: [],
-      userUnitOverrides: [],
       ...NO_RESULTS,
       ...SWAP_RESET,
       tryHarderAvailable: false,
@@ -628,42 +728,150 @@ export const useModelStore = create<ModelState>((set, get) => ({
             }
           : t
       ),
-    })),
+    }));
+  },
   // Keep only the newest studies: each holds a full sweep result grid.
+  // Eviction is silent in the store, so log it: the user must know old work is gone.
   addParametricStudy: (study) =>
-    set((state) => ({ parametricStudies: [...state.parametricStudies, study].slice(-20) })),
+    set((state) => {
+      const next = [...state.parametricStudies, study].slice(-5);
+      if (state.parametricStudies.length + 1 > next.length) {
+        setTimeout(() =>
+          useModelStore.getState().addConsoleLine('>>> Oldest parametric study dropped (keeps newest 5).')
+        , 0);
+      }
+      return { parametricStudies: next };
+    }),
   removeParametricStudy: (id) =>
-    set((state) => ({ parametricStudies: state.parametricStudies.filter((s) => s.id !== id) })),
-  setIntegralTable: (table) => set({ integralTable: table }),
-  setIntegralCSV: (csv) => set({ integralCSV: csv }),
+    set((state) => {
+      // Deleting the displayed study must clear its table and plot, and the
+      // tab entry (not just the flat state) must forget it — otherwise the
+      // study pops back open the next time its tab is shown.
+      const tabId = state.activeTabId;
+      const prev = state.openTabs.find((t) => t.id === tabId);
+      const wasActive = (prev && prev.activeStudyId === id) || state.activeStudyId === id;
+      const openTabs = state.openTabs.map((t) =>
+        t.id !== tabId
+          ? t
+          : {
+              ...t,
+              parametricStudies: t.parametricStudies.filter((s) => s.id !== id),
+              ...(wasActive ? { parametricResult: null, activeStudyId: null } : {}),
+            }
+      );
+      const entry = openTabs.find((t) => t.id === tabId);
+      return {
+        openTabs,
+        parametricStudies: entry ? entry.parametricStudies : state.parametricStudies,
+        ...(wasActive ? { parametricResult: null, activeStudyId: null } : {}),
+      };
+    }),
+  patchTabResults: (tabId, patch) =>
+    set((state) => {
+      const openTabs = state.openTabs.map((t) =>
+        t.id === tabId ? { ...t, ...patch } : t
+      );
+      // TabResults fields also exist on the flat state: keep both in sync
+      // when the patched tab is the one on screen.
+      if (tabId === state.activeTabId) return { ...patch, openTabs };
+      return { openTabs };
+    }),
+  saveParametricStudy: (tabId, study, result) =>
+    set((state) => {
+      const prev = state.openTabs.find((t) => t.id === tabId);
+      const dropped = prev && prev.parametricStudies.length + 1 > 5;
+      const openTabs = state.openTabs.map((t) =>
+        t.id === tabId
+          ? {
+              ...t,
+              parametricResult: result,
+              parametricStudies: [...t.parametricStudies, study].slice(-5),
+              activeStudyId: study.id,
+            }
+          : t
+      );
+      if (dropped) {
+        setTimeout(() =>
+          useModelStore.getState().addConsoleLine('>>> Oldest parametric study dropped (keeps newest 5).')
+        , 0);
+      }
+      if (tabId === state.activeTabId) {
+        const entry = openTabs.find((t) => t.id === tabId);
+        return {
+          parametricResult: result,
+          parametricStudies: entry ? entry.parametricStudies : state.parametricStudies,
+          activeStudyId: study.id,
+          openTabs,
+        };
+      }
+      return { openTabs };
+    }),
+  setIntegralTable: (table) => get().patchTabResults(get().activeTabId, { integralTable: table }),
+  setIntegralCSV: (csv) => get().patchTabResults(get().activeTabId, { integralCSV: csv }),
   setUserUnit: (variableName, units) =>
     set((state) => {
       const existing = state.userUnitOverrides.filter((o) => o.variableName !== variableName);
       if (units) existing.push({ variableName, units });
-      return { userUnitOverrides: existing };
+      return {
+        userUnitOverrides: existing,
+        openTabs: state.openTabs.map((t) =>
+          t.id === state.activeTabId ? { ...t, userUnitOverrides: existing } : t
+        ),
+      };
     }),
-  setLookupTables: (tables) => set({ lookupTables: tables }),
-  setLookupTableCSV: (name, csv) =>
-    set((state) => ({
-      lookupTableCSVs: { ...state.lookupTableCSVs, [name]: csv },
-      lookupTables: state.lookupTables.some((t) => t.name === name)
-        ? state.lookupTables
-        : [...state.lookupTables, { name, columns: [], rows: 0 }],
-    })),
-  removeLookupTable: (name) =>
-    set((state) => {
-      const { [name]: _removed, ...rest } = state.lookupTableCSVs;
-      return { lookupTableCSVs: rest, lookupTables: state.lookupTables.filter((t) => t.name !== name) };
-    }),
+  setLookupTables: (tables) => get().patchTabResults(get().activeTabId, { lookupTables: tables }),
+  setLookupTableCSV: (name, csv, fromCache = false) => {
+    const s = get();
+    const lookupTableCSVs = { ...s.lookupTableCSVs, [name]: csv };
+    const currentTables = s.lookupTables ?? [];
+    const lookupTables = currentTables.some((t) => t.name === name)
+      ? currentTables
+      : [...currentTables, { name, columns: [], rows: 0 }];
+    s.patchTabResults(s.activeTabId, { lookupTableCSVs, lookupTables });
+    if (!fromCache) set((state) => ({ tableRev: state.tableRev + 1 }));
+  },
+  removeLookupTable: (name) => {
+    const s = get();
+    const { [name]: _removed, ...lookupTableCSVs } = s.lookupTableCSVs;
+    const currentTables = s.lookupTables ?? [];
+    const lookupTables = currentTables.filter((t) => t.name !== name);
+    s.patchTabResults(s.activeTabId, { lookupTableCSVs, lookupTables });
+    set((state) => ({ tableRev: state.tableRev + 1 }));
+    if (s.selectedLookupTable === name) {
+      // setSelectedLookupTable also clears a stale cell-edit flag.
+      get().setSelectedLookupTable(null);
+    }
+  },
   scheduleConfPut: () => {
     if (confPutTimer) clearTimeout(confPutTimer);
+    // Capture the text and its tab now: if the user switches tabs before the
+    // timer fires, the write belongs to this tab, not to the newly shown one.
+    const { conf, activeTabId } = get();
     confPutTimer = setTimeout(() => {
-      // Read the conf at fire time: after a quick tab switch this must write
-      // the active tab's conf, not the text that was current when typing began.
-      const { conf } = get();
+      if (get().activeTabId !== activeTabId) return;
       api.putConf(conf).catch((err) =>
         useModelStore.getState().addConsoleLine(`>>> ERROR saving coolsolve.conf: ${toErrMsg(err)}`)
       );
     }, 400);
+  },
+  scheduleEescodePut: () => {
+    if (eescodePutTimer) clearTimeout(eescodePutTimer);
+    const { eescode, activeTabId } = get();
+    eescodePutTimer = setTimeout(() => {
+      if (get().activeTabId !== activeTabId) return;
+      api.putEescode(eescode).catch((err) =>
+        useModelStore.getState().addConsoleLine(`>>> ERROR saving model: ${toErrMsg(err)}`)
+      );
+    }, 1000);
+  },
+  cancelPendingPuts: () => {
+    if (confPutTimer) {
+      clearTimeout(confPutTimer);
+      confPutTimer = undefined;
+    }
+    if (eescodePutTimer) {
+      clearTimeout(eescodePutTimer);
+      eescodePutTimer = undefined;
+    }
   },
 }));

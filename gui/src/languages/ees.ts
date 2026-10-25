@@ -3,6 +3,8 @@ import type * as Monaco from 'monaco-editor';
 export const EES_LANGUAGE_ID = 'coolsolve';
 
 export function registerEESLanguage(monaco: typeof Monaco) {
+  // Idempotent: React StrictMode double-mounts in dev.
+  if (monaco.languages.getLanguages().some((l) => l.id === EES_LANGUAGE_ID)) return;
   // Register language
   monaco.languages.register({ id: EES_LANGUAGE_ID });
 

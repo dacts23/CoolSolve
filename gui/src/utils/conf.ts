@@ -6,6 +6,14 @@
  * or guesses are modified via the GUI.
  */
 
+/** `#` starts a comment only after whitespace (or as the whole value).
+ * Legacy compact `1#note` now stays part of the value: add a space (`1 #note`). */
+function commentIndex(s: string): number {
+  if (s.startsWith('#')) return 0;
+  const m = /\s#/.exec(s);
+  return m ? m.index + 1 : -1;
+}
+
 /** Parse conf or initials text into a key→value Map */
 export function parseKeyValueText(text: string): Map<string, string> {
   const map = new Map<string, string>();
@@ -15,7 +23,7 @@ export function parseKeyValueText(text: string): Map<string, string> {
     const eq = trimmed.indexOf('=');
     if (eq < 0) continue;
     let val = trimmed.substring(eq + 1).trim();
-    const hash = val.indexOf('#');
+    const hash = commentIndex(val);
     if (hash >= 0) val = val.substring(0, hash).trim();
     map.set(trimmed.substring(0, eq).trim(), val);
   }
@@ -39,7 +47,7 @@ export function updateKeyValueLines(
     if (!trimmed.startsWith('#') && trimmed.includes('=')) {
       const eqIdx = line.indexOf('=');
       const key = line.substring(0, eqIdx).trim();
-      if (key in pending) {
+      if (Object.prototype.hasOwnProperty.call(pending, key)) {
         const val = pending[key];
         delete pending[key];
         if (val === undefined || val === '') {
@@ -48,7 +56,7 @@ export function updateKeyValueLines(
         }
         // Preserve any inline comment after value
         const afterEq = line.substring(eqIdx + 1);
-        const hashIdx = afterEq.indexOf('#');
+        const hashIdx = commentIndex(afterEq);
         const comment = hashIdx >= 0 ? ` ${afterEq.substring(hashIdx).trim()}` : '';
         out.push(`${key} = ${val}${comment}`);
         continue;

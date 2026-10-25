@@ -27,6 +27,7 @@ interface UIState {
   bottomPanelOpen: boolean;
   consolePosition: 'bottom' | 'rhs';
   minimap: boolean;
+  minimapSliderAlways: boolean;
   wordWrap: boolean;
   stickyScroll: boolean;
   showUnderlines: boolean;
@@ -58,70 +59,113 @@ interface UIState {
   setConsolePosition: (pos: 'bottom' | 'rhs') => void;
   toggleConsolePosition: () => void;
   toggleMinimap: () => void;
+  toggleMinimapSliderAlways: () => void;
   toggleWordWrap: () => void;
   toggleStickyScroll: () => void;
   toggleShowUnderlines: () => void;
   setWordWrap: (wrap: boolean) => void;
   setMinimap: (minimap: boolean) => void;
+  setMinimapSliderAlways: (always: boolean) => void;
   setStickyScroll: (sticky: boolean) => void;
   setShowUnderlines: (underlines: boolean) => void;
   setActiveModal: (modal: ModalType) => void;
 }
 
-const savedTheme = (localStorage.getItem('coolsolve-theme') as ThemeMode) || 'dark';
-const rawPalette = localStorage.getItem('coolsolve-palette') || 'catppuccin';
+type StoreSet = (
+  partial: Partial<UIState> | ((s: UIState) => Partial<UIState>)
+) => void;
+
+/** Storage reads/writes that never throw (private mode, blocked cookies). */
+function load(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function save(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Storage unavailable: the setting stays in memory for this session.
+  }
+}
+
+/** Write one persisted value (all plain setters share this shape). */
+function put<K extends keyof UIState>(set: StoreSet, key: K, storageKey: string, value: UIState[K]): void {
+  save(storageKey, String(value));
+  set({ [key]: value } as Partial<UIState>);
+}
+
+/** Flip one persisted boolean (all plain toggles share this shape). */
+function flip(
+  set: StoreSet,
+  key: 'minimap' | 'minimapSliderAlways' | 'wordWrap' | 'stickyScroll' | 'showUnderlines' | 'forceAppBg',
+  storageKey: string
+): void {
+  set((s) => {
+    const next = !s[key];
+    save(storageKey, String(next));
+    return { [key]: next } as Partial<UIState>;
+  });
+}
+
+const savedTheme = (load('coolsolve-theme') as ThemeMode) || 'dark';
+const rawPalette = load('coolsolve-palette') || 'catppuccin';
 const savedPalette = (rawPalette === 'light' || rawPalette === 'default') ? 'catppuccin' : rawPalette.replace(/-(dark|light)$/, '');
-const savedEditorTheme = (localStorage.getItem('coolsolve-editor-theme') || savedPalette).replace(/-(dark|light)$/, '');
+const savedEditorTheme = (load('coolsolve-editor-theme') || savedPalette).replace(/-(dark|light)$/, '');
 const resolve = (m: ThemeMode) => (m === 'system' ? systemTheme() : m);
 
 export const useUIStore = create<UIState>((set) => ({
   theme: resolve(savedTheme),
   themeMode: savedTheme,
-  accent: localStorage.getItem('coolsolve-accent') || 'blue',
+  accent: load('coolsolve-accent') || 'blue',
   editorTheme: savedEditorTheme,
-  editorFont: localStorage.getItem('coolsolve-editor-font') || 'consolas',
-  editorFontSize: Number(localStorage.getItem('coolsolve-editor-font-size')) || DEFAULT_EDITOR_FONT_SIZE,
-  forceAppBg: localStorage.getItem('coolsolve-force-app-bg') === 'true',
+  editorFont: load('coolsolve-editor-font') || 'consolas',
+  editorFontSize: Number(load('coolsolve-editor-font-size')) || DEFAULT_EDITOR_FONT_SIZE,
+  forceAppBg: load('coolsolve-force-app-bg') === 'true',
   settingsTab: 'appearance',
   activityMode: 'code',
-  leftPanelWidth: Number(localStorage.getItem('coolsolve-left-width')) || 240,
+  leftPanelWidth: Number(load('coolsolve-left-width')) || 240,
   palette: savedPalette,
   rightTab: 'variables',
   rightPanelOpen: true,
   bottomTab: 'console',
   debugFile: null,
   bottomPanelOpen: true,
-  consolePosition: (localStorage.getItem('coolsolve-console-pos') as 'bottom' | 'rhs') || 'rhs',
-  minimap: localStorage.getItem('coolsolve-minimap') !== 'false',
-  wordWrap: localStorage.getItem('coolsolve-word-wrap') !== 'false',
-  stickyScroll: localStorage.getItem('coolsolve-sticky-scroll') !== 'false',
-  showUnderlines: localStorage.getItem('coolsolve-show-underlines') !== 'false',
+  consolePosition: (load('coolsolve-console-pos') as 'bottom' | 'rhs') || 'rhs',
+  minimap: load('coolsolve-minimap') !== 'false',
+  minimapSliderAlways: load('coolsolve-minimap-slider') === 'true',
+  wordWrap: load('coolsolve-word-wrap') === 'true',
+  stickyScroll: load('coolsolve-sticky-scroll') !== 'false',
+  showUnderlines: load('coolsolve-show-underlines') !== 'false',
   activeModal: null,
 
   setTheme: (theme) => {
-    localStorage.setItem('coolsolve-theme', theme);
+    save('coolsolve-theme', theme);
     set({ theme, themeMode: theme });
   },
   setThemeMode: (mode) => {
-    localStorage.setItem('coolsolve-theme', mode);
+    save('coolsolve-theme', mode);
     set({ themeMode: mode, theme: resolve(mode) });
   },
   setAccent: (accent) => {
-    localStorage.setItem('coolsolve-accent', accent);
+    save('coolsolve-accent', accent);
     set({ accent });
   },
   setEditorTheme: (editorTheme) => {
     const family = editorTheme.replace(/-(dark|light)$/, '');
-    localStorage.setItem('coolsolve-editor-theme', family);
-    localStorage.setItem('coolsolve-palette', family);
+    save('coolsolve-editor-theme', family);
+    save('coolsolve-palette', family);
     set({ editorTheme: family, palette: family });
   },
   setEditorFont: (editorFont) => {
-    localStorage.setItem('coolsolve-editor-font', editorFont);
+    save('coolsolve-editor-font', editorFont);
     set({ editorFont });
   },
   setEditorFontSize: (editorFontSize) => {
-    localStorage.setItem('coolsolve-editor-font-size', String(editorFontSize));
+    save('coolsolve-editor-font-size', String(editorFontSize));
     set({ editorFontSize });
   },
   stepEditorFontSize: (direction) => {
@@ -135,36 +179,28 @@ export const useUIStore = create<UIState>((set) => ({
         const smaller = STANDARD_FONT_SIZES.filter((s) => s < cur);
         next = smaller.length > 0 ? smaller[smaller.length - 1] : STANDARD_FONT_SIZES[0];
       }
-      localStorage.setItem('coolsolve-editor-font-size', String(next));
+      save('coolsolve-editor-font-size', String(next));
       return { editorFontSize: next };
     });
   },
-  setForceAppBg: (forceAppBg) => {
-    localStorage.setItem('coolsolve-force-app-bg', String(forceAppBg));
-    set({ forceAppBg });
-  },
-  toggleForceAppBg: () =>
-    set((s) => {
-      const next = !s.forceAppBg;
-      localStorage.setItem('coolsolve-force-app-bg', String(next));
-      return { forceAppBg: next };
-    }),
+  setForceAppBg: (forceAppBg) => put(set, 'forceAppBg', 'coolsolve-force-app-bg', forceAppBg),
+  toggleForceAppBg: () => flip(set, 'forceAppBg', 'coolsolve-force-app-bg'),
   setSettingsTab: (settingsTab) => set({ settingsTab }),
   openSettings: (tab = 'appearance') => set({ activeModal: 'settings', settingsTab: tab }),
   setPalette: (palette) => {
     const family = palette.replace(/-(dark|light)$/, '');
-    localStorage.setItem('coolsolve-palette', family);
-    localStorage.setItem('coolsolve-editor-theme', family);
+    save('coolsolve-palette', family);
+    save('coolsolve-editor-theme', family);
     set({ palette: family, editorTheme: family });
   },
   setLeftPanelWidth: (leftPanelWidth) => {
-    localStorage.setItem('coolsolve-left-width', String(leftPanelWidth));
+    save('coolsolve-left-width', String(leftPanelWidth));
     set({ leftPanelWidth });
   },
   toggleTheme: () =>
     set((s) => {
       const nextTheme = s.theme === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('coolsolve-theme', nextTheme);
+      save('coolsolve-theme', nextTheme);
       return { theme: nextTheme, themeMode: nextTheme };
     }),
   setActivityMode: (activityMode) => set({ activityMode }),
@@ -178,55 +214,25 @@ export const useUIStore = create<UIState>((set) => ({
   setBottomPanelOpen: (open) => set({ bottomPanelOpen: open }),
   toggleBottomPanel: () => set((s) => ({ bottomPanelOpen: !s.bottomPanelOpen })),
   setConsolePosition: (consolePosition) => {
-    localStorage.setItem('coolsolve-console-pos', consolePosition);
+    save('coolsolve-console-pos', consolePosition);
     set({ consolePosition });
   },
   toggleConsolePosition: () =>
     set((s) => {
       const next = s.consolePosition === 'bottom' ? 'rhs' : 'bottom';
-      localStorage.setItem('coolsolve-console-pos', next);
+      save('coolsolve-console-pos', next);
       return { consolePosition: next };
     }),
-  toggleMinimap: () =>
-    set((s) => {
-      const next = !s.minimap;
-      localStorage.setItem('coolsolve-minimap', String(next));
-      return { minimap: next };
-    }),
-  toggleWordWrap: () =>
-    set((s) => {
-      const next = !s.wordWrap;
-      localStorage.setItem('coolsolve-word-wrap', String(next));
-      return { wordWrap: next };
-    }),
-  toggleStickyScroll: () =>
-    set((s) => {
-      const next = !s.stickyScroll;
-      localStorage.setItem('coolsolve-sticky-scroll', String(next));
-      return { stickyScroll: next };
-    }),
-  toggleShowUnderlines: () =>
-    set((s) => {
-      const next = !s.showUnderlines;
-      localStorage.setItem('coolsolve-show-underlines', String(next));
-      return { showUnderlines: next };
-    }),
-  setWordWrap: (wordWrap) => {
-    localStorage.setItem('coolsolve-word-wrap', String(wordWrap));
-    set({ wordWrap });
-  },
-  setMinimap: (minimap) => {
-    localStorage.setItem('coolsolve-minimap', String(minimap));
-    set({ minimap });
-  },
-  setStickyScroll: (stickyScroll) => {
-    localStorage.setItem('coolsolve-sticky-scroll', String(stickyScroll));
-    set({ stickyScroll });
-  },
-  setShowUnderlines: (showUnderlines) => {
-    localStorage.setItem('coolsolve-show-underlines', String(showUnderlines));
-    set({ showUnderlines });
-  },
+  toggleMinimap: () => flip(set, 'minimap', 'coolsolve-minimap'),
+  toggleMinimapSliderAlways: () => flip(set, 'minimapSliderAlways', 'coolsolve-minimap-slider'),
+  toggleWordWrap: () => flip(set, 'wordWrap', 'coolsolve-word-wrap'),
+  toggleStickyScroll: () => flip(set, 'stickyScroll', 'coolsolve-sticky-scroll'),
+  toggleShowUnderlines: () => flip(set, 'showUnderlines', 'coolsolve-show-underlines'),
+  setWordWrap: (wordWrap) => put(set, 'wordWrap', 'coolsolve-word-wrap', wordWrap),
+  setMinimap: (minimap) => put(set, 'minimap', 'coolsolve-minimap', minimap),
+  setMinimapSliderAlways: (always) => put(set, 'minimapSliderAlways', 'coolsolve-minimap-slider', always),
+  setStickyScroll: (stickyScroll) => put(set, 'stickyScroll', 'coolsolve-sticky-scroll', stickyScroll),
+  setShowUnderlines: (showUnderlines) => put(set, 'showUnderlines', 'coolsolve-show-underlines', showUnderlines),
   setActiveModal: (modal) => set({ activeModal: modal }),
 }));
 

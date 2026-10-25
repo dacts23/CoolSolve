@@ -3,12 +3,18 @@ import ConfirmModal from './ConfirmModal';
 import SyntaxFooter from './SyntaxFooter';
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
-import { downloadCsv, parseCSV, serializeCSV } from '../utils/csv';
+import { downloadCsv, normalizeGridRows, parseCSV, safeSpreadsheetCell, sanitizeFilename, serializeCSV } from '../utils/csv';
+import { TABLE_PAGE_SIZE } from '../utils/paging.ts';
+import { EmptyState, TablePager } from './SetupShell';
 import { Plus, Minus, Upload, Download, Save, Trash2, Copy, Check, Table2 } from 'lucide-react';
 
 // ============================================================================
 // TableGrid: editable grid for one table
 // ============================================================================
+
+// Thousands of rows would mount one <input> per cell: show 200 data rows
+// per page. data-row/data-col stay absolute so edits and focus still work.
+const GRID_PAGE_SIZE = TABLE_PAGE_SIZE;
 
 interface TableGridProps {
   tableName: string;
@@ -21,11 +27,24 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
   const setLookupTableDirty = useModelStore((s) => s.setLookupTableDirty);
 
   const rawCSV = lookupTableCSVs[tableName] ?? '';
+  const [parseFailed, setParseFailed] = useState(() => {
+    if (!rawCSV) return false;
+    try {
+      parseCSV(rawCSV);
+      return false;
+    } catch {
+      return true;
+    }
+  });
   const [rows, setRows] = useState<string[][]>(() => {
-    const parsed = parseCSV(rawCSV);
-    // Ensure at least 1 header row + 2 data rows and 2 columns
-    if (parsed.length === 0) return [['Column1', 'Column2'], ['', ''], ['', '']];
-    return parsed;
+    try {
+      const parsed = parseCSV(rawCSV);
+      // Ensure at least 1 header row + 2 data rows and 2 columns
+      if (parsed.length === 0) return [['Column1', 'Column2'], ['', ''], ['', '']];
+      return normalizeGridRows(parsed);
+    } catch {
+      return [['Column1', 'Column2'], ['', ''], ['', '']];
+    }
   });
 
   // Any cell edit marks the grid dirty (uncommitted work). The async CSV load
@@ -42,12 +61,18 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
   // cell edits the user already made while the load was in flight.
   React.useEffect(() => {
     if (rawCSV && !useModelStore.getState().lookupTableDirty) {
-      const parsed = parseCSV(rawCSV);
-      if (parsed.length > 0) setRows(parsed);
+      try {
+        const parsed = parseCSV(rawCSV);
+        if (parsed.length > 0) setRows(normalizeGridRows(parsed));
+        setParseFailed(false);
+      } catch {
+        setParseFailed(true);
+        setError('Stored table is not valid CSV and was not loaded.');
+      }
     }
   }, [rawCSV]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(parseFailed ? 'Stored table is not valid CSV and was not loaded.' : null);
 
   const setCell = (r: number, c: number, val: string) => {
     editRows((prev) => {
@@ -61,7 +86,13 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
 
   const addColumn = () =>
-    editRows((prev) => prev.map((row, i) => [...row, i === 0 ? `Column${row.length + 1}` : '']));
+    editRows((prev) => {
+      // Never reuse a header: ColumnN+1 can collide after delete+add.
+      const used = new Set(prev[0] ?? []);
+      let n = (prev[0]?.length ?? 0) + 1;
+      while (used.has(`Column${n}`)) n++;
+      return prev.map((row, i) => [...row, i === 0 ? `Column${n}` : '']);
+    });
 
   const gridContainerRef = useRef<HTMLDivElement>(null);
 
@@ -79,21 +110,36 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
 
   const [lastFocusedCell, setLastFocusedCell] = useState<{ r: number; c: number } | null>(null);
 
+  const [gridPage, setGridPage] = useState(0);
+  const totalGridPages = Math.max(1, Math.ceil(Math.max(1, rows.length - 1) / GRID_PAGE_SIZE));
+  const safeGridPage = Math.min(gridPage, totalGridPages - 1);
+
+  // Focus a cell by absolute row, switching grid pages when needed.
+  const goToCell = useCallback((r: number, c: number, selectAll = true) => {
+    const targetPage = Math.max(0, Math.floor((r - 1) / GRID_PAGE_SIZE));
+    if (targetPage !== gridPage) {
+      setGridPage(targetPage);
+      setTimeout(() => focusCell(r, c, selectAll), 0);
+    } else {
+      focusCell(r, c, selectAll);
+    }
+  }, [gridPage, focusCell]);
+
   const deleteRow = useCallback((r: number) => {
     if (r === 0 || rows.length <= 2) return; // keep header + at least 1 data row
     editRows((prev) => prev.filter((_, i) => i !== r));
     const nextRow = Math.min(r, rows.length - 2);
     const col = lastFocusedCell?.c ?? 0;
-    setTimeout(() => focusCell(nextRow, col), 0);
-  }, [rows.length, lastFocusedCell, focusCell, editRows]);
+    setTimeout(() => goToCell(nextRow, col), 0);
+  }, [rows.length, lastFocusedCell, goToCell, editRows]);
 
   const deleteColumn = useCallback((c: number) => {
     if (rows[0]?.length <= 1) return; // keep at least 1 column
     editRows((prev) => prev.map((row) => row.filter((_, i) => i !== c)));
     const nextCol = Math.min(c, (rows[0]?.length ?? 2) - 2);
     const row = lastFocusedCell?.r ?? 0;
-    setTimeout(() => focusCell(row, nextCol), 0);
-  }, [rows, lastFocusedCell, focusCell, editRows]);
+    setTimeout(() => goToCell(row, nextCol), 0);
+  }, [rows, lastFocusedCell, goToCell, editRows]);
 
   const handleRemoveRow = () => {
     if (rows.length <= 2) return;
@@ -144,14 +190,14 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) {
-        if (r > 0) focusCell(r - 1, c);
+        if (r > 0) goToCell(r - 1, c);
       } else {
         if (r < numRows - 1) {
-          focusCell(r + 1, c);
+          goToCell(r + 1, c);
         } else {
           // On last row, press Enter to append a new row and focus it (like Excel)
           editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
-          setTimeout(() => focusCell(numRows, c), 0);
+          setTimeout(() => goToCell(numRows, c), 0);
         }
       }
       return;
@@ -160,7 +206,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     if (e.key === 'ArrowDown') {
       if (r < numRows - 1) {
         e.preventDefault();
-        focusCell(r + 1, c);
+        goToCell(r + 1, c);
       }
       return;
     }
@@ -168,7 +214,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
     if (e.key === 'ArrowUp') {
       if (r > 0) {
         e.preventDefault();
-        focusCell(r - 1, c);
+        goToCell(r - 1, c);
       }
       return;
     }
@@ -178,7 +224,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
       const isAllSelected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
       if ((isAtEnd || isAllSelected) && c < numCols - 1) {
         e.preventDefault();
-        focusCell(r, c + 1);
+        goToCell(r, c + 1);
       }
       return;
     }
@@ -188,7 +234,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
       const isAllSelected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
       if ((isAtStart || isAllSelected) && c > 0) {
         e.preventDefault();
-        focusCell(r, c - 1);
+        goToCell(r, c - 1);
       }
       return;
     }
@@ -197,48 +243,82 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
       e.preventDefault();
       if (e.shiftKey) {
         if (c > 0) {
-          focusCell(r, c - 1);
+          goToCell(r, c - 1);
         } else if (r > 0) {
-          focusCell(r - 1, numCols - 1);
+          goToCell(r - 1, numCols - 1);
         }
       } else {
         if (c < numCols - 1) {
-          focusCell(r, c + 1);
+          goToCell(r, c + 1);
         } else if (r < numRows - 1) {
-          focusCell(r + 1, 0);
+          goToCell(r + 1, 0);
         } else {
           editRows((prev) => [...prev, Array(prev[0]?.length ?? 1).fill('')]);
-          setTimeout(() => focusCell(numRows, 0), 0);
+          setTimeout(() => goToCell(numRows, 0), 0);
         }
       }
       return;
     }
   };
 
+  // Each cell is an <input>: cap the import so the grid stays editable.
+  const MAX_IMPORT_ROWS = 2000;
+  const MAX_IMPORT_COLS = 50;
+
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Import file exceeds the 10 MB limit.');
+      e.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      const parsed = parseCSV(text);
-      if (parsed.length > 0) editRows(parsed);
+      let parsed: string[][];
+      try {
+        parsed = parseCSV(text);
+      } catch (err) {
+        setError(err instanceof Error ? `Import failed: ${err.message}` : 'Import failed: not valid CSV.');
+        return;
+      }
+      if (parsed.length === 0) return;
+      const cols = Math.max(...parsed.map((r) => r.length));
+      if (parsed.length > MAX_IMPORT_ROWS || cols > MAX_IMPORT_COLS) {
+        setError(`Import is ${parsed.length} x ${cols}: capped at ${MAX_IMPORT_ROWS} rows x ${MAX_IMPORT_COLS} columns.`);
+        return;
+      }
+      editRows(normalizeGridRows(parsed));
+      setParseFailed(false);
+      setError(null);
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
   const handleExportCSV = async () => {
-    const csv = serializeCSV(rows);
-    await downloadCsv(`${tableName}.csv`, csv);
+    // Prefix Excel-formula cells so opening the CSV never runs code, but keep valid numbers intact.
+    const safe = rows.map((r) => r.map(safeSpreadsheetCell));
+    const csv = serializeCSV(safe);
+    await downloadCsv(sanitizeFilename(`${tableName}.csv`), csv);
   };
 
   const [copiedTsv, setCopiedTsv] = useState(false);
-  const handleCopyTSV = () => {
-    const tsv = rows.map((r) => r.join('\t')).join('\n');
-    navigator.clipboard.writeText(tsv);
-    setCopiedTsv(true);
-    setTimeout(() => setCopiedTsv(false), 1200);
+  const handleCopyTSV = async () => {
+    const escTsv = (c: string) => {
+      // TSV has no quoting: replace tabs/newlines so paste keeps columns.
+      const t = c.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+      return safeSpreadsheetCell(t);
+    };
+    const tsv = rows.map((r) => r.map(escTsv).join('\t')).join('\n');
+    try {
+      await navigator.clipboard.writeText(tsv);
+      setCopiedTsv(true);
+      setTimeout(() => setCopiedTsv(false), 1200);
+    } catch {
+      setError('Copy failed: the clipboard is unavailable.');
+    }
   };
 
   const numCols = rows[0]?.length ?? 0;
@@ -254,7 +334,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
             <button className="table-btn-pill icon-only" onClick={addRow} title="Add row at bottom">
               <Plus size={11} />
             </button>
-            <button className="table-btn-pill icon-only" onClick={handleRemoveRow} disabled={rows.length <= 2} title="Remove bottom row">
+            <button className="table-btn-pill icon-only" onClick={handleRemoveRow} disabled={rows.length <= 2} title="Remove selected or bottom row">
               <Minus size={11} />
             </button>
           </div>
@@ -267,7 +347,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
             <button className="table-btn-pill icon-only" onClick={addColumn} title="Add column at right">
               <Plus size={11} />
             </button>
-            <button className="table-btn-pill icon-only" onClick={handleRemoveColumn} disabled={numCols <= 1} title="Remove rightmost column">
+            <button className="table-btn-pill icon-only" onClick={handleRemoveColumn} disabled={numCols <= 1} title="Remove selected or rightmost column">
               <Minus size={11} />
             </button>
           </div>
@@ -297,7 +377,7 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
           </span>
         )}
 
-        <button className="table-save-btn" onClick={handleSave} disabled={saving} title="Save changes">
+        <button className="table-save-btn" onClick={handleSave} disabled={saving || parseFailed} title={parseFailed ? 'Stored table failed to load — re-import before saving' : 'Save changes'}>
           <Save size={12} /> {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
@@ -341,7 +421,9 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
             </tr>
           </thead>
           <tbody>
-            {rows.slice(1).map((row, ri) => (
+            {rows.slice(1 + safeGridPage * GRID_PAGE_SIZE, 1 + (safeGridPage + 1) * GRID_PAGE_SIZE).map((row, pi) => {
+              const ri = safeGridPage * GRID_PAGE_SIZE + pi;
+              return (
               <tr key={ri + 1}>
                 <td style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 11, border: '1px solid var(--border-color)', width: 44, background: 'var(--bg-secondary)', userSelect: 'none' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px' }}>
@@ -371,18 +453,26 @@ function TableGrid({ tableName, onSaved }: TableGridProps) {
                   </td>
                 ))}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
 
+      <TablePager
+        page={safeGridPage}
+        totalPages={totalGridPages}
+        onPageChange={setGridPage}
+        label={`Rows ${safeGridPage * GRID_PAGE_SIZE + 1}–${Math.min(rows.length - 1, (safeGridPage + 1) * GRID_PAGE_SIZE)} of ${rows.length - 1}`}
+      />
+
       <SyntaxFooter
         items={[
-          { code: `LOOKUP('${tableName}', row, col)` },
-          { code: `INTERPOLATE('${tableName}', '${rows[0]?.[0] || 'xcol'}', '${rows[0]?.[1] || 'ycol'}', xval)` },
-          { code: `INTERPOLATE2('${tableName}', '${rows[0]?.[0] || 'xcol'}', '${rows[0]?.[1] || 'ycol'}', '${rows[0]?.[2] || 'zcol'}', x, y)` },
-          { code: `LOOKUP$ROW('${tableName}', '${rows[0]?.[0] || 'col'}', key)` },
-          { code: `SUMLOOKUP('${tableName}', '${rows[0]?.[0] || 'col'}')` },
+          { code: `LOOKUP('${tableName.replace(/'/g, "''")}', row, col)` },
+          { code: `INTERPOLATE('${tableName.replace(/'/g, "''")}', '${(rows[0]?.[0] || 'xcol').replace(/'/g, "''")}', '${(rows[0]?.[1] || 'ycol').replace(/'/g, "''")}', xval)` },
+          { code: `INTERPOLATE2('${tableName.replace(/'/g, "''")}', '${(rows[0]?.[0] || 'xcol').replace(/'/g, "''")}', '${(rows[0]?.[1] || 'ycol').replace(/'/g, "''")}', '${(rows[0]?.[2] || 'zcol').replace(/'/g, "''")}', x, y)` },
+          { code: `LOOKUP$ROW('${tableName.replace(/'/g, "''")}', '${(rows[0]?.[0] || 'col').replace(/'/g, "''")}', key)` },
+          { code: `SUMLOOKUP('${tableName.replace(/'/g, "''")}', '${(rows[0]?.[0] || 'col').replace(/'/g, "''")}')` },
         ]}
         fileHint={`<model>-${tableName}.csv`}
       />
@@ -404,13 +494,15 @@ export default function LookupTableEditor() {
 
   const selectedTable = useModelStore((s) => s.selectedLookupTable);
   const setSelectedTable = useModelStore((s) => s.setSelectedLookupTable);
+  const setLookupTableDirty = useModelStore((s) => s.setLookupTableDirty);
   const [error, setError] = useState<string | null>(null);
+  const [tableToSwitchTo, setTableToSwitchTo] = useState<string | null>(null);
 
   // Auto-fetch CSV if selectedTable is set from sidebar
   React.useEffect(() => {
     if (selectedTable && !lookupTableCSVs[selectedTable]) {
       api.getTableCSV(selectedTable)
-        .then((csv) => setLookupTableCSV(selectedTable, csv))
+        .then((csv) => setLookupTableCSV(selectedTable, csv, true))
         .catch((e) => setError(e instanceof Error ? e.message : String(e)));
     }
   }, [selectedTable, lookupTableCSVs, setLookupTableCSV]);
@@ -425,19 +517,29 @@ export default function LookupTableEditor() {
     }
   }, [setLookupTables]);
 
-  // Open a table (fetch CSV if not cached)
+  // Open a table (fetch CSV if not cached). Switching grids drops unsaved
+  // cell edits, so confirm first when the open grid is dirty.
+  // A seq guard keeps fast double-clicks on the last clicked table.
+  const openSeq = useRef(0);
   const openTable = useCallback(async (name: string) => {
+    if (name !== selectedTable && useModelStore.getState().lookupTableDirty) {
+      setTableToSwitchTo(name);
+      return;
+    }
     if (!lookupTableCSVs[name]) {
+      const seq = ++openSeq.current;
       try {
         const csv = await api.getTableCSV(name);
-        setLookupTableCSV(name, csv);
+        if (seq !== openSeq.current) return;
+        setLookupTableCSV(name, csv, true);
       } catch (e) {
+        if (seq !== openSeq.current) return;
         setError(e instanceof Error ? e.message : String(e));
         return;
       }
     }
     setSelectedTable(name);
-  }, [lookupTableCSVs, setLookupTableCSV, setSelectedTable]);
+  }, [selectedTable, lookupTableCSVs, setLookupTableCSV, setSelectedTable]);
 
   const confirmDeleteTable = async () => {
     if (!tableToDelete) return;
@@ -476,31 +578,17 @@ export default function LookupTableEditor() {
 
       {/* Table list or Guide */}
       {lookupTables.length === 0 ? (
-        <div className="parametric-empty-state" style={{ flex: 1 }}>
-          <div className="empty-state-content">
-            <div className="empty-state-icon">
-              <Table2 size={36} />
-            </div>
-            <h2>Lookup Tables Workspace</h2>
-            <p>
-              Manage, edit, and interpolate external experimental data or custom property tables directly in equations.
-            </p>
-            <div className="empty-state-steps">
-              <div className="step-item">
-                <span className="step-num">1</span>
-                <span>Enter a table name and click <strong>Add</strong> in the left sidebar</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">2</span>
-                <span>Populate rows, edit cells, or import an existing CSV file</span>
-              </div>
-              <div className="step-item">
-                <span className="step-num">3</span>
-                <span>Access data in equations using <strong>LOOKUP</strong>, <strong>INTERPOLATE</strong>, or <strong>TABLEVALUE</strong></span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <EmptyState
+          style={{ flex: 1 }}
+          icon={<Table2 size={36} />}
+          title="Lookup Tables Workspace"
+          description="Manage, edit, and interpolate external experimental data or custom property tables directly in equations."
+          steps={[
+            <>Enter a table name and click <strong>Add</strong> in the left sidebar</>,
+            'Populate rows, edit cells, or import an existing CSV file',
+            <>Access data in equations using <strong>LOOKUP</strong>, <strong>INTERPOLATE</strong>, or <strong>TABLEVALUE</strong></>,
+          ]}
+        />
       ) : (
         <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 14px 14px' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -557,6 +645,20 @@ export default function LookupTableEditor() {
           confirmLabel="Delete Table"
           onConfirm={confirmDeleteTable}
           onCancel={() => setTableToDelete(null)}
+        />
+      )}
+      {tableToSwitchTo && (
+        <ConfirmModal
+          title="Discard Unsaved Table Edits?"
+          message={`"${selectedTable}" has unsaved cell edits. Opening "${tableToSwitchTo}" will discard them.`}
+          confirmLabel="Discard & Open"
+          onConfirm={() => {
+            setLookupTableDirty(false);
+            const name = tableToSwitchTo;
+            setTableToSwitchTo(null);
+            void openTable(name);
+          }}
+          onCancel={() => setTableToSwitchTo(null)}
         />
       )}
     </div>

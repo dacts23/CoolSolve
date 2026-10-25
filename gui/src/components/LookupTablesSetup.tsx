@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import ConfirmModal from './ConfirmModal';
+import { SetupShell } from './SetupShell';
 import { Table2, Plus, Trash2 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
@@ -19,15 +20,10 @@ export default function LookupTablesSetup() {
   const [tableToDelete, setTableToDelete] = useState<string | null>(null);
   const [tableToSwitch, setTableToSwitch] = useState<string | null>(null);
   useEffect(() => {
-    api.getTables()
-      .then((res) => {
-        setLookupTables(res.tables);
-        if (res.tables.length > 0 && !useModelStore.getState().selectedLookupTable) {
-          setSelectedLookupTable(res.tables[0].name);
-        }
-      })
-      .catch(() => {});
-  }, [setLookupTables, setSelectedLookupTable]);
+    if (lookupTables.length > 0 && !selectedLookupTable) {
+      setSelectedLookupTable(lookupTables[0].name);
+    }
+  }, [lookupTables, selectedLookupTable, setSelectedLookupTable]);
 
   // Switching tables drops the unsaved cell edits of the open grid: confirm first.
   const selectTable = (name: string) => {
@@ -40,7 +36,10 @@ export default function LookupTablesSetup() {
 
   const handleCreateTable = async () => {
     const name = newTableName.trim();
-    if (!name) return;
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+      setError('Table name must be 1-64 chars: letters, numbers, - or _');
+      return;
+    }
     const defaultCSV = 'Column1,Column2\n1,\n2,\n';
     setLoading(true);
     setError(null);
@@ -74,15 +73,7 @@ export default function LookupTablesSetup() {
   };
 
   return (
-    <div className="parametric-setup-sidebar">
-      <div className="explorer-header">
-        <div className="explorer-title-group">
-          <Table2 size={14} className="accent-icon" />
-          <span className="explorer-title">LOOKUP TABLES</span>
-        </div>
-      </div>
-
-      <div className="parametric-setup-content">
+    <SetupShell icon={<Table2 size={14} className="accent-icon" />} title="LOOKUP TABLES">
         <div className="parametric-section">
           <div className="parametric-section-title">NEW TABLE</div>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -158,7 +149,6 @@ export default function LookupTablesSetup() {
           )}
         </div>
 
-      </div>
       {tableToDelete && (
         <ConfirmModal
           title="Delete Lookup Table"
@@ -180,6 +170,6 @@ export default function LookupTablesSetup() {
           onCancel={() => setTableToSwitch(null)}
         />
       )}
-    </div>
+    </SetupShell>
   );
 }

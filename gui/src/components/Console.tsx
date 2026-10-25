@@ -127,7 +127,7 @@ export function DiagnosticsView() {
                 style={{
                   fontSize: 11,
                   color: 'var(--accent-color)',
-                  fontFamily: 'var(--font-mono)',
+                  fontFamily: 'var(--mono-font)',
                   flexShrink: 0,
                 }}
               >
@@ -144,28 +144,31 @@ export function DiagnosticsView() {
 export default function Console() {
   const consoleLines = useModelStore((s) => s.consoleLines);
   const containerRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
 
-  // Auto-scroll to bottom
+  // Auto-scroll only when already at the bottom: lets users read history.
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
+    const el = containerRef.current;
+    if (!el) return;
+    if (stickRef.current) el.scrollTop = el.scrollHeight;
   }, [consoleLines]);
 
+  const onScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
   const getLineClass = (line: string) => {
-    if (line.includes('ERROR') || line.includes('FAIL') || line.includes('Error') || line.includes('[Error]'))
-      return 'console-line error';
-    if (line.includes('[Warning]'))
-      return 'console-line warning';
-    if (line.includes('SUCCESS') || line.includes('converged'))
-      return 'console-line success';
-    if (line.startsWith('>>>') || line.startsWith('---'))
-      return 'console-line info';
+    if (line.includes('[Error]') || line.includes('ERROR') || line.includes('FAIL')) return 'console-line error';
+    if (line.includes('[Warning]')) return 'console-line warning';
+    if (line.includes('SUCCESS') || line.includes('converged')) return 'console-line success';
+    if (line[0] === '>' || line[0] === '-') return 'console-line info';
     return 'console-line';
   };
 
   return (
-    <div className="console" ref={containerRef}>
+    <div className="console" ref={containerRef} onScroll={onScroll}>
       {consoleLines.length === 0 ? (
         <div className="console-line" style={{ color: 'var(--text-muted)' }}>
           Ready. Open a file or enter equations to begin.

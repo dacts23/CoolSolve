@@ -1,7 +1,9 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Star, X } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
-import type { VariableInfo } from '../api/types';
+import { UNIT_TABLE, convertUnits, formatPrettyUnit, formatSolNumber } from '../utils/solutionFormat.ts';
+import { buildOverrideMap, buildParsedMap, resolveUnitFromMap } from '../utils/parsedUnits.ts';
+import { parseUnitSystemString } from '../utils/unitSystem.ts';
 
 const GREEK_MAP: Record<string, string> = {
   alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', Delta: 'Δ',
@@ -12,152 +14,6 @@ const GREEK_MAP: Record<string, string> = {
   Psi: 'Ψ', omega: 'ω', Omega: 'Ω',
 };
 
-interface UnitConv {
-  dim: string;
-  toSI: (v: number) => number;
-  fromSI: (v: number) => number;
-}
-
-const lin = (dim: string, factor: number): UnitConv => ({
-  dim,
-  toSI: (v) => v * factor,
-  fromSI: (v) => v / factor,
-});
-
-const UNIT_TABLE: Record<string, UnitConv> = {
-  K: { dim: 'T', toSI: (v) => v, fromSI: (v) => v },
-  C: { dim: 'T', toSI: (v) => v + 273.15, fromSI: (v) => v - 273.15 },
-  '°C': { dim: 'T', toSI: (v) => v + 273.15, fromSI: (v) => v - 273.15 },
-  F: { dim: 'T', toSI: (v) => (v - 32) * (5 / 9) + 273.15, fromSI: (v) => (v - 273.15) * (9 / 5) + 32 },
-  '°F': { dim: 'T', toSI: (v) => (v - 32) * (5 / 9) + 273.15, fromSI: (v) => (v - 273.15) * (9 / 5) + 32 },
-  R: { dim: 'T', toSI: (v) => v * (5 / 9), fromSI: (v) => v * (9 / 5) },
-  Pa: lin('P', 1),
-  kPa: lin('P', 1e3),
-  MPa: lin('P', 1e6),
-  GPa: lin('P', 1e9),
-  bar: lin('P', 1e5),
-  mbar: lin('P', 100),
-  atm: lin('P', 101325),
-  psi: lin('P', 6894.757293168),
-  psia: lin('P', 6894.757293168),
-  mmHg: lin('P', 133.322387415),
-  inHg: lin('P', 3386.389),
-  m: lin('L', 1),
-  cm: lin('L', 0.01),
-  mm: lin('L', 0.001),
-  km: lin('L', 1000),
-  in: lin('L', 0.0254),
-  ft: lin('L', 0.3048),
-  yd: lin('L', 0.9144),
-  mi: lin('L', 1609.344),
-  'm^2': lin('A', 1),
-  'm²': lin('A', 1),
-  'cm^2': lin('A', 1e-4),
-  'cm²': lin('A', 1e-4),
-  'mm^2': lin('A', 1e-6),
-  'mm²': lin('A', 1e-6),
-  'in^2': lin('A', 0.00064516),
-  'in²': lin('A', 0.00064516),
-  'ft^2': lin('A', 0.09290304),
-  'ft²': lin('A', 0.09290304),
-  'm^3': lin('V', 1),
-  'm³': lin('V', 1),
-  L: lin('V', 1e-3),
-  l: lin('V', 1e-3),
-  mL: lin('V', 1e-6),
-  'cm^3': lin('V', 1e-6),
-  'cm³': lin('V', 1e-6),
-  'ft^3': lin('V', 0.028316846592),
-  'ft³': lin('V', 0.028316846592),
-  'in^3': lin('V', 1.6387064e-5),
-  'in³': lin('V', 1.6387064e-5),
-  gal: lin('V', 0.003785411784),
-  kg: lin('M', 1),
-  g: lin('M', 1e-3),
-  ton: lin('M', 1000),
-  lbm: lin('M', 0.45359237),
-  lb: lin('M', 0.45359237),
-  oz: lin('M', 0.028349523125),
-  'kg/s': lin('Mdot', 1),
-  'kg/h': lin('Mdot', 1 / 3600),
-  'kg/hr': lin('Mdot', 1 / 3600),
-  'g/s': lin('Mdot', 1e-3),
-  'lbm/s': lin('Mdot', 0.45359237),
-  'lbm/h': lin('Mdot', 0.45359237 / 3600),
-  'lbm/hr': lin('Mdot', 0.45359237 / 3600),
-  'm/s': lin('Vel', 1),
-  'km/h': lin('Vel', 1 / 3.6),
-  'ft/s': lin('Vel', 0.3048),
-  'ft/min': lin('Vel', 0.00508),
-  mph: lin('Vel', 0.44704),
-  'm^3/kg': lin('v', 1),
-  'm³/kg': lin('v', 1),
-  'ft^3/lbm': lin('v', 0.028316846592 / 0.45359237),
-  'ft³/lbm': lin('v', 0.028316846592 / 0.45359237),
-  'kg/m^3': lin('rho', 1),
-  'kg/m³': lin('rho', 1),
-  'g/cm^3': lin('rho', 1000),
-  'g/cm³': lin('rho', 1000),
-  'lbm/ft^3': lin('rho', 0.45359237 / 0.028316846592),
-  'lbm/ft³': lin('rho', 0.45359237 / 0.028316846592),
-  J: lin('E', 1),
-  kJ: lin('E', 1e3),
-  MJ: lin('E', 1e6),
-  GJ: lin('E', 1e9),
-  Wh: lin('E', 3600),
-  kWh: lin('E', 3.6e6),
-  Btu: lin('E', 1055.05585262),
-  cal: lin('E', 4.184),
-  kcal: lin('E', 4184),
-  W: lin('W', 1),
-  kW: lin('W', 1e3),
-  MW: lin('W', 1e6),
-  GW: lin('W', 1e9),
-  hp: lin('W', 745.699871582),
-  'Btu/h': lin('W', 0.29307107),
-  'Btu/hr': lin('W', 0.29307107),
-  'Btu/s': lin('W', 1055.05585262),
-  'J/kg': lin('h', 1),
-  'kJ/kg': lin('h', 1e3),
-  'Btu/lbm': lin('h', 2326),
-  'J/kg-K': lin('s', 1),
-  'J/(kg-K)': lin('s', 1),
-  'J/(kg·K)': lin('s', 1),
-  'kJ/kg-K': lin('s', 1e3),
-  'kJ/(kg-K)': lin('s', 1e3),
-  'kJ/(kg·K)': lin('s', 1e3),
-  'Btu/lbm-R': lin('s', 4186.8),
-  'Btu/(lbm-R)': lin('s', 4186.8),
-  N: lin('F', 1),
-  kN: lin('F', 1e3),
-  lbf: lin('F', 4.4482216152605),
-};
-
-function convertUnits(val: number, fromUnit: string, toUnit: string): number | null {
-  const f = UNIT_TABLE[fromUnit.trim()];
-  const t = UNIT_TABLE[toUnit.trim()];
-  if (!f || !t || f.dim !== t.dim) return null;
-  return t.fromSI(f.toSI(val));
-}
-
-function formatPrettyUnit(u: string): string {
-  return u
-    .replace(/\^2\b/g, '²')
-    .replace(/\^3\b/g, '³')
-    .replace(/\^4\b/g, '⁴')
-    .replace(/\^-1\b/g, '⁻¹');
-}
-
-function formatSolNumber(val: number, sigFigs = 4): string {
-  if (!Number.isFinite(val)) return String(val);
-  if (val === 0) return '0';
-  const abs = Math.abs(val);
-  if (Number.isInteger(val) && abs < 1e6) return val.toString();
-  if (abs >= 1e5 || abs < 1e-3) {
-    return val.toExponential(Math.max(1, sigFigs - 1));
-  }
-  return Number(val.toPrecision(sigFigs)).toString();
-}
 
 function renderSolVarName(name: string) {
   let base = name;
@@ -203,9 +59,12 @@ interface VarMeta {
 
 const META_STORAGE_KEY = 'coolsolve-solution-meta';
 
-function loadMeta(): Record<string, VarMeta> {
+function loadMeta(tabId: string, modelName: string): Record<string, VarMeta> {
   try {
-    const raw = localStorage.getItem(META_STORAGE_KEY);
+    const raw =
+      localStorage.getItem(`${META_STORAGE_KEY}:${tabId}`) ||
+      localStorage.getItem(`${META_STORAGE_KEY}:${tabId}:${modelName || 'untitled'}`) ||
+      localStorage.getItem(`${META_STORAGE_KEY}:${tabId}:untitled`);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -214,7 +73,14 @@ function loadMeta(): Record<string, VarMeta> {
 
 export default function SolutionView() {
   const [subTab, setSubTab] = useState<'main' | 'key'>('main');
-  const [metaMap, setMetaMap] = useState<Record<string, VarMeta>>(loadMeta);
+  // Star/comment/alt-unit settings are keyed by tab id so two untitled tabs
+  // never share one bucket and renaming a tab or saving a bundle under a new
+  // name never orphans the settings.
+  const activeTabId = useModelStore((s) => s.activeTabId);
+  const storageKey = `${META_STORAGE_KEY}:${activeTabId}`;
+  const [metaMap, setMetaMap] = useState<Record<string, VarMeta>>(() =>
+    loadMeta(activeTabId, useModelStore.getState().modelName)
+  );
   const [editingVar, setEditingVar] = useState<string | null>(null);
   const [unitDraft, setUnitDraft] = useState('');
   const [altUnitDraft, setAltUnitDraft] = useState('');
@@ -228,36 +94,29 @@ export default function SolutionView() {
   const setUserUnit = useModelStore((s) => s.setUserUnit);
 
   useEffect(() => {
+    setMetaMap(loadMeta(activeTabId, useModelStore.getState().modelName));
+  }, [activeTabId]);
+
+  useEffect(() => {
     try {
-      localStorage.setItem(META_STORAGE_KEY, JSON.stringify(metaMap));
+      if (Object.keys(metaMap).length === 0) {
+        localStorage.removeItem(storageKey);
+      } else {
+        localStorage.setItem(storageKey, JSON.stringify(metaMap));
+      }
     } catch {
       // Storage unavailable or quota exceeded
     }
-  }, [metaMap]);
+  }, [metaMap, storageKey]);
 
-  const unitSystemStr = useMemo(() => {
-    const m = eescode.match(/^\s*\$UnitSystem\s+([^\r\n{"]+)/im);
-    return m ? m[1].trim() : 'SI C Pa J mass deg';
-  }, [eescode]);
+  const unitSystemStr = useMemo(() => parseUnitSystemString(eescode), [eescode]);
 
-  const parsedMap = useMemo(() => {
-    const map = new Map<string, VariableInfo>();
-    for (const v of parsedVariables) {
-      map.set(v.name.toLowerCase(), v);
-    }
-    return map;
-  }, [parsedVariables]);
+  const parsedMap = useMemo(() => buildParsedMap(parsedVariables), [parsedVariables]);
+  const overrideMap = useMemo(() => buildOverrideMap(userUnitOverrides), [userUnitOverrides]);
 
   const getUnit = useCallback(
-    (name: string): string => {
-      const userOvr = userUnitOverrides.find(
-        (o) => o.variableName.toLowerCase() === name.toLowerCase()
-      );
-      if (userOvr) return userOvr.units;
-      const info = parsedMap.get(name.toLowerCase());
-      return info?.units || '';
-    },
-    [parsedMap, userUnitOverrides]
+    (name: string): string => resolveUnitFromMap(name, parsedMap, overrideMap).units,
+    [parsedMap, overrideMap]
   );
 
   const scalarVars = useMemo(() => {
@@ -288,7 +147,7 @@ export default function SolutionView() {
     const entry = UNIT_TABLE[u];
     if (!entry) return [];
     return Object.keys(UNIT_TABLE).filter(
-      (k) => UNIT_TABLE[k].dim === entry.dim && k !== u && !k.includes('²') && !k.includes('³') && !k.includes('°')
+      (k) => UNIT_TABLE[k].dim === entry.dim && k !== u
     );
   }, [editingVar, unitDraft]);
 
@@ -304,7 +163,8 @@ export default function SolutionView() {
 
   const saveVarEditor = () => {
     if (!editingVar) return;
-    setUserUnit(editingVar, unitDraft.trim());
+    const u = unitDraft.trim();
+    setUserUnit(editingVar, u);
     setMetaMap((prev) => ({
       ...prev,
       [editingVar]: {

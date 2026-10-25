@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import ConfirmModal from './ConfirmModal';
 import { Play, Square, LineChart, Trash2, Download } from 'lucide-react';
 import Select from './Select';
+import { SetupShell } from './SetupShell';
 import { useModelStore } from '../stores/modelStore';
 import { useParametricStore, fmt } from '../stores/parametricStore';
 import { exportParametricStudyToCsv } from '../utils/csv';
@@ -35,7 +36,11 @@ function SweepInput({
   disabled,
 }: SweepInputProps) {
   const handleVarChange = (name: string) => {
+    const prevMin = min.trim();
+    const prevMax = max.trim();
     setVarName(name);
+    // Only suggest a range when the fields are empty: never clobber typing.
+    if (prevMin !== '' || prevMax !== '') return;
     const info = imposedVars.find((v) => v.name === name);
     if (info?.imposedValue !== undefined) {
       const val = info.imposedValue;
@@ -52,10 +57,14 @@ function SweepInput({
         <label>Variable</label>
         <Select
           value={varName}
-          options={imposedVars.map((v) => ({
-            value: v.name,
-            label: `${v.name}${v.imposedValue !== undefined ? ` (= ${fmt(v.imposedValue)})` : ''}`,
-          }))}
+          options={[
+            // Clearing a choice must be possible: Sweep 2 is optional.
+            { value: '', label: '— none —' },
+            ...imposedVars.map((v) => ({
+              value: v.name,
+              label: `${v.name}${v.imposedValue !== undefined ? ` (= ${fmt(v.imposedValue)})` : ''}`,
+            })),
+          ]}
           placeholder="- select variable -"
           onChange={handleVarChange}
           disabled={disabled}
@@ -128,16 +137,8 @@ export default function ParametricSetup() {
   );
 
   return (
-    <div className="parametric-setup-sidebar">
-      <div className="explorer-header">
-        <div className="explorer-title-group">
-          <LineChart size={14} className="accent-icon" />
-          <span className="explorer-title">PARAMETRIC SWEEP</span>
-        </div>
-      </div>
-
-      <div className="parametric-setup-content">
-        {imposedVars.length === 0 ? (
+    <SetupShell icon={<LineChart size={14} className="accent-icon" />} title="PARAMETRIC SWEEP">
+      {imposedVars.length === 0 ? (
           <div className="parametric-notice">
             No imposed variables detected.
             <br />
@@ -283,7 +284,6 @@ export default function ParametricSetup() {
             </div>
           </div>
         )}
-      </div>
       {studyToDelete && (
         <ConfirmModal
           title="Delete Parametric Study"
@@ -293,6 +293,6 @@ export default function ParametricSetup() {
           onCancel={() => setStudyToDelete(null)}
         />
       )}
-    </div>
+    </SetupShell>
   );
 }

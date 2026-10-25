@@ -81,36 +81,53 @@ const TEMPLATES = {
   }),
 };
 
-export default function Plot(props: ComponentProps<typeof BasePlot>) {
+export default function Plot(props: ComponentProps<typeof BasePlot> & { themeOverride?: 'light' | 'dark' }) {
   const mode = useUIStore((s) => s.theme);
   const box = useRef<HTMLDivElement>(null);
-  const t = TEMPLATES[mode === 'dark' ? 'dark' : 'light'];
+  // Forced light/dark plot (e.g. light plot on a dark app so axes stay
+  // readable); otherwise the plot follows the app theme.
+  const t = TEMPLATES[props.themeOverride ?? (mode === 'dark' ? 'dark' : 'light')];
+
+  // Callers may still pass useResizeHandler (react-plotly API): it stays off,
+  // the observer below is the only resize path (no double resize).
+  // themeOverride is ours: keep it off the underlying plot component.
+  const { useResizeHandler: _ignored, themeOverride: _theme, ...rest } = props as ComponentProps<typeof BasePlot> & { useResizeHandler?: boolean; themeOverride?: 'light' | 'dark' };
+  void _ignored;
+  void _theme;
 
   const layout = {
     template: t,
     autosize: true,
-    ...props.layout,
-    modebar: { ...t.layout.modebar, ...props.layout?.modebar, orientation: 'v' as const },
-    xaxis: { ...t.layout.xaxis, ...props.layout?.xaxis },
-    yaxis: { ...t.layout.yaxis, ...props.layout?.yaxis },
+    ...rest.layout,
+    // Callers can override the modebar (e.g. horizontal when a colorbar is
+    // shown); the template default (vertical) applies when they do not.
+    modebar: { ...t.layout.modebar, ...rest.layout?.modebar },
+    // Deep-merge axis titles: a caller title must not wipe template fonts.
+    xaxis: { ...t.layout.xaxis, ...rest.layout?.xaxis, title: { ...(t.layout.xaxis as { title?: object }).title, ...rest.layout?.xaxis?.title } },
+    yaxis: { ...t.layout.yaxis, ...rest.layout?.yaxis, title: { ...(t.layout.yaxis as { title?: object }).title, ...rest.layout?.yaxis?.title } },
   } as ComponentProps<typeof BasePlot>['layout'];
 
   // The built-in resize handler only reacts to window resizes; panes dragged by split dividers need this.
+  // Debounced via rAF: split-drag fires continuously.
   useEffect(() => {
     const el = box.current;
     if (!el) return;
+    let raf = 0;
     const ro = new ResizeObserver(() => {
-      const gd = el.querySelector('.js-plotly-plot');
-      if (gd) PlotlyLib.Plots.resize(gd as HTMLElement);
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const gd = el.querySelector('.js-plotly-plot');
+        if (gd) PlotlyLib.Plots.resize(gd as HTMLElement);
+      });
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, []);
 
   return (
     <div ref={box} style={{ width: '100%', height: '100%', ...props.style }}>
       <BasePlot
-        {...props}
+        {...rest}
         layout={layout}
         config={{
           displaylogo: false,
@@ -121,7 +138,6 @@ export default function Plot(props: ComponentProps<typeof BasePlot>) {
           ...props.config,
         }}
         style={{ width: '100%', height: '100%' }}
-        useResizeHandler
       />
     </div>
   );

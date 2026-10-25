@@ -1,6 +1,6 @@
 !include "MUI2.nsh"
 
-!define VERSION "0.4.2"
+!define VERSION "0.4.3"
 !define COOLPROP_VERSION "8.1.0dev (75af7816)"
 
 Name "CoolSolve-Canary ${VERSION}"

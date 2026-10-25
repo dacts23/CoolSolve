@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseKeyValueText, updateKeyValueLines } from '../utils/conf.ts';
@@ -12,6 +12,13 @@ describe('Audit Fixes: Configuration & Key-Value Preservation (Item 10 & 13)', (
     assert.strictEqual(parsed.get('tolerance'), '1e-6');
     assert.strictEqual(parsed.get('max_iter'), '100');
     assert.strictEqual(parsed.size, 2);
+  });
+
+  it('keeps # inside values, strips it only after whitespace', () => {
+    assert.strictEqual(parseKeyValueText('path = C#lib\n').get('path'), 'C#lib');
+    assert.strictEqual(parseKeyValueText('tolerance = 1e-6 # tight\n').get('tolerance'), '1e-6');
+    // Legacy compact `1#note` stays a value: files must use `1 #note`.
+    assert.strictEqual(parseKeyValueText('tolerance = 1e-6#tight\n').get('tolerance'), '1e-6#tight');
   });
 
   it('updates existing keys in-place while preserving comments and line structure', () => {
@@ -154,14 +161,37 @@ class FakeEventSource {
   static last: FakeEventSource | null = null;
   onmessage: ((msg: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  listeners = new Map<string, ((msg: { data: string }) => void)[]>();
   closed = false;
   url: string;
   constructor(url: string) {
     this.url = url;
     FakeEventSource.last = this;
   }
+  addEventListener(type: string, fn: (msg: { data: string }) => void): void {
+    const arr = this.listeners.get(type) ?? [];
+    arr.push(fn);
+    this.listeners.set(type, arr);
+  }
+  removeEventListener(type: string, fn: (msg: { data: string }) => void): void {
+    const arr = this.listeners.get(type) ?? [];
+    this.listeners.set(type, arr.filter((f) => f !== fn));
+  }
   close(): void {
     this.closed = true;
+  }
+}
+
+const savedGlobals: Record<string, unknown> = {};
+for (const k of ['localStorage', 'sessionStorage', 'window', 'EventSource', 'fetch'] as const) {
+  savedGlobals[k] = (globalThis as Record<string, unknown>)[k];
+}
+// Restored at the end of the file so this suite never leaks into others.
+function restoreGlobals(): void {
+  const g = globalThis as Record<string, unknown>;
+  for (const [k, v] of Object.entries(savedGlobals)) {
+    if (v === undefined) delete g[k];
+    else g[k] = v;
   }
 }
 
@@ -191,6 +221,7 @@ globals.fetch = async (url: string | URL | Request, init?: RequestInit) => {
 };
 
 const { fmt, useParametricStore } = await import('../stores/parametricStore.ts');
+const { setRunBusy } = await import('../utils/runBusy.ts');
 const { useModelStore, hasResults } = await import('../stores/modelStore.ts');
 const { handleSolve, handleStopSolve } = await import('../utils/useSolveRunner.ts');
 
@@ -314,6 +345,10 @@ describe('Audit Fixes: tab switches write one model at a time (Item 2)', () => {
         ['conf', 'maxIterations = 5'],
       ]
     );
+    // Finish the run so the busy flag does not leak into later suites.
+    FakeEventSource.last!.onmessage!({ data: JSON.stringify({ type: 'done', message: 'ok' }) });
+    await tick();
+    assert.strictEqual(useModelStore.getState().solving, false);
   });
 });
 
@@ -345,6 +380,7 @@ describe('Run results live with their tab (tab results fix)', () => {
   });
 
   it('keeps results across tab switches and restores them', () => {
+    setRunBusy(false);
     useModelStore.setState({
       openTabs: [tab('a', 'codea'), tab('b', 'codeb')],
       activeTabId: 'a',
@@ -435,6 +471,7 @@ describe('Audit Fixes: sweep steps are validated before allocating (Item 2)', ()
   it('rejects a huge step count without sending anything', async () => {
     calls.length = 0;
     useModelStore.setState({ solving: false }); // an earlier test left a run in flight
+    setRunBusy(false); // the busy flag travels with it
     useParametricStore.setState({
       var1Name: 'x',
       var1Min: '0',
@@ -451,15 +488,586 @@ describe('Audit Fixes: sweep steps are validated before allocating (Item 2)', ()
 });
 
 describe('Audit Fixes: saved studies are capped (Item 4)', () => {
-  it('keeps only the newest 20 studies', () => {
-    for (let i = 0; i < 25; i++) {
+  it('keeps only the newest 5 studies', () => {
+    for (let i = 0; i < 10; i++) {
       useModelStore
         .getState()
         .addParametricStudy({ id: `s${i}`, name: `s${i}`, sweepVariables: [], result: {} as never, timestamp: i });
     }
     const studies = useModelStore.getState().parametricStudies;
-    assert.strictEqual(studies.length, 20);
+    assert.strictEqual(studies.length, 5);
     assert.strictEqual(studies[0].id, 's5');
-    assert.strictEqual(studies[19].id, 's24');
+    assert.strictEqual(studies[4].id, 's9');
   });
 });
+
+describe('Audit Fixes: shared helpers and risky paths have tests (Item 17)', () => {
+  it('converts units across dimensions and formats numbers', async () => {
+    const { convertUnits, formatSolNumber } = await import('../utils/solutionFormat.ts');
+    assert.strictEqual(convertUnits(0, 'C', 'K'), 273.15);
+    assert.strictEqual(convertUnits(1, 'kPa', 'Pa'), 1000);
+    assert.strictEqual(convertUnits(1, 'kPa', 'C'), null);
+    assert.strictEqual(formatSolNumber(NaN), '-');
+    assert.strictEqual(formatSolNumber(42), '42');
+    assert.strictEqual(formatSolNumber(0.000001), (0.000001).toExponential(3));
+  });
+
+  it('detects pipeline presets including custom and deep defaults', async () => {
+    const { detectPipelinePreset } = await import('../utils/pipelinePreset.ts');
+    assert.strictEqual(detectPipelinePreset(new Map()), 'newton-only');
+    assert.strictEqual(detectPipelinePreset(new Map(), 'solverPipeline', 'pipelineMode', true), 'sequential');
+    assert.strictEqual(
+      detectPipelinePreset(new Map([['solverPipeline', 'Newton'], ['pipelineMode', 'sequential']])),
+      'newton-only'
+    );
+    assert.strictEqual(
+      detectPipelinePreset(new Map([['solverPipeline', 'Newton, TrustRegion'], ['pipelineMode', 'parallel']])),
+      'custom'
+    );
+    assert.strictEqual(
+      detectPipelinePreset(new Map([['solverPipeline', 'Nope'], ['pipelineMode', 'sequential']])),
+      'custom'
+    );
+  });
+
+  it('resolves units with user overrides winning and spots imposed vars', async () => {
+    const { buildParsedMap, resolveUnitFromMap, isImposedFromMap } =
+      await import('../utils/parsedUnits.ts');
+    const parsed = [
+      { name: 'T_in', units: 'C', unitSource: 'code', isArray: false, isImposed: true },
+    ] as never[];
+    const map = buildParsedMap(parsed);
+    assert.deepStrictEqual(resolveUnitFromMap('t_in', map, []), { units: 'C', source: 'code' });
+    assert.deepStrictEqual(
+      resolveUnitFromMap('T_IN', map, [{ variableName: 't_in', units: 'K' }]),
+      { units: 'K', source: 'user' }
+    );
+    assert.strictEqual(isImposedFromMap('T_in', map), true);
+    assert.strictEqual(isImposedFromMap('other', map), false);
+    assert.strictEqual(resolveUnitFromMap('T_IN', map, []).units, 'C');
+  });
+
+  it('reads the $UnitSystem directive or falls back to the default', async () => {
+    const { parseUnitSystemString, parseUnitSystemTokens } = await import('../utils/unitSystem.ts');
+    assert.strictEqual(parseUnitSystemString('$UnitSystem SI C kPa kJ mass deg\nx=1'), 'SI C kPa kJ mass deg');
+    assert.strictEqual(parseUnitSystemString('x = 1'), 'SI C Pa J mass deg');
+    assert.deepStrictEqual(parseUnitSystemTokens('$UnitSystem SI C kPa kJ mass deg'), ['SI', 'C', 'kPa', 'kJ', 'mass', 'deg']);
+  });
+
+  it('manages one tab session id and appends it to session URLs', async () => {
+    const session = await import('../api/session.ts');
+    (globals.sessionStorage as Storage).clear();
+    assert.strictEqual(session.getTabSessionId(), null);
+    const id = session.enableTabSession();
+    assert.match(id ?? '', /^[0-9a-f]{32}$/);
+    assert.strictEqual(session.enableTabSession(), id); // idempotent
+    assert.ok(session.withSession('/api/v1/x').includes('?sid='));
+  });
+
+  it('clamps stepping the editor font size at both ends', async () => {
+    const { useUIStore } = await import('../stores/uiStore.ts');
+    useUIStore.setState({ editorFontSize: 24 });
+    useUIStore.getState().stepEditorFontSize(1);
+    assert.strictEqual(useUIStore.getState().editorFontSize, 24);
+    useUIStore.setState({ editorFontSize: 10 });
+    useUIStore.getState().stepEditorFontSize(-1);
+    assert.strictEqual(useUIStore.getState().editorFontSize, 10);
+  });
+
+  it('rejects a sweep with no variable before sending anything', async () => {
+    calls.length = 0;
+    useModelStore.setState({ solving: false });
+    setRunBusy(false);
+    useParametricStore.setState({
+      var1Name: '',
+      var1Min: '0',
+      var1Max: '1',
+      var1Steps: '10',
+      error: '',
+      running: false,
+    });
+    await useParametricStore.getState().runStudy();
+    assert.match(useParametricStore.getState().error, /Sweep 1/);
+    assert.strictEqual(useParametricStore.getState().running, false);
+    assert.strictEqual(calls.length, 0);
+  });
+
+  it('removes a conf key when its value is cleared', async () => {
+    const { updateKeyValueLines } = await import('../utils/conf.ts');
+    assert.strictEqual(updateKeyValueLines('a = 1\nb = 2\n', { a: '' }), 'b = 2\n');
+  });
+
+  it('reloads a tab without losing its runs and drops table data on delete', () => {
+    useModelStore.setState({
+      openTabs: [{ id: 'a', name: 'a.eescode', filePath: '', modelName: '', libraryId: '', eescode: 'x=1', initials: '', sol: '', conf: '', dirty: false, ...noResults() }],
+      activeTabId: 'a',
+      eescode: 'x=1',
+      initials: '',
+      conf: '',
+      sol: '',
+      dirty: false,
+      ...noResults(),
+    });
+    useModelStore.getState().setSolveResult({ success: true, status: 'kept' } as never);
+    useModelStore.getState().loadFile('a', 'x=2', '', '', '', '', '');
+    assert.strictEqual(useModelStore.getState().lastResult?.status, 'kept');
+    assert.strictEqual(useModelStore.getState().eescode, 'x=2');
+    useModelStore.getState().setLookupTableCSV('T', 'a,b\n1,2');
+    useModelStore.getState().removeLookupTable('T');
+    assert.ok(!('T' in useModelStore.getState().lookupTableCSVs));
+    assert.ok(!useModelStore.getState().lookupTables.some((t) => t.name === 'T'));
+  });
+
+  it('loads a session model and ignores a stale generation', async () => {
+    const { showSessionModel } = await import('../utils/sessionModel.ts');
+    const realFetch = globals.fetch;
+    try {
+      let mode = 'A';
+      globals.fetch = (async (url: string | URL | Request) => {
+        const p = String(url);
+        const ok = (v: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => v, text: async () => (typeof v === 'string' ? v : '') });
+        const missing = () => ({ ok: false, status: 404, statusText: 'x', json: async () => ({ error: 'x' }), text: async () => '' });
+        if (p.endsWith('/files/eescode')) {
+          if (mode === 'A') await new Promise((r) => setTimeout(r, 30));
+          const tag = mode;
+          return ok({ content: `x=${tag}`, filePath: '', modelName: tag, libraryId: '' });
+        }
+        if (p.endsWith('/files/initials')) return ok({ content: '' });
+        if (p.endsWith('/files/sol')) return ok({ content: '' });
+        if (p.endsWith('/files/conf')) return ok({ content: '' });
+        if (p.endsWith('/tables')) return ok({ tables: [] });
+        return missing();
+      }) as typeof fetch;
+      const first = showSessionModel();
+      mode = 'B';
+      await showSessionModel();
+      await first;
+      assert.strictEqual(useModelStore.getState().eescode, 'x=B');
+    } finally {
+      globals.fetch = realFetch;
+    }
+  });
+
+  it('reports a failed library open in the console and returns false', async () => {
+    const { openLibraryModel } = await import('../utils/library.ts');
+    const realFetch = globals.fetch;
+    try {
+      globals.fetch = (async () => ({
+        ok: false, status: 500, statusText: 'x', json: async () => ({ error: 'nope' }), text: async () => '',
+      })) as typeof fetch;
+      useModelStore.getState().clearConsole();
+      assert.strictEqual(await openLibraryModel('CSL-1'), false);
+      assert.match(useModelStore.getState().consoleLines.join('\n'), /ERROR opening library model/);
+    } finally {
+      globals.fetch = realFetch;
+    }
+  });
+
+  it('prefers a model fluid with a dome and stores the saturation dome', async () => {
+    const { useDiagramStore } = await import('../stores/diagramStore.ts');
+    const realFetch = globals.fetch;
+    try {
+      globals.fetch = (async (url: string | URL | Request) => {
+        const p = String(url);
+        const ok = (v: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => v, text: async () => '' });
+        if (p.endsWith('/coolprop/fluids')) {
+          return ok({
+            fluids: [
+              { name: 'Water', coolpropName: 'Water', type: 'pure', hasDome: true },
+              { name: 'Air', coolpropName: 'Air', type: 'pure', hasDome: false },
+            ],
+            modelFluids: ['Water'],
+          });
+        }
+        return ok({ fluid: 'Water', critical: { T: 1, P: 2, H: 3, S: 4, D: 5 }, triplePoint: { T: 1 }, liquid: {}, vapor: {}, nPoints: 3, computeTime_ms: 5 });
+      }) as typeof fetch;
+      await useDiagramStore.getState().initFluids();
+      assert.strictEqual(useDiagramStore.getState().selectedFluid, 'Water');
+      await useDiagramStore.getState().generate();
+      assert.strictEqual(useDiagramStore.getState().satData?.fluid, 'Water');
+    } finally {
+      globals.fetch = realFetch;
+    }
+  });
+
+  it('tracks the shared run flag without leaking', async () => {
+    const runBusy = await import('../utils/runBusy.ts');
+    runBusy.setRunBusy(true);
+    assert.strictEqual(runBusy.isRunBusy(), true);
+    runBusy.setRunBusy(false);
+    assert.strictEqual(runBusy.isRunBusy(), false);
+  });
+
+  it('registers lazy editor theme variants on demand', async () => {
+    const { ensureEditorTheme } = await import('../languages/editorThemes.ts');
+    const defined: string[] = [];
+    const fakeMonaco = {
+      editor: {
+        defineTheme: (name: string) => { defined.push(name); },
+      },
+    };
+    ensureEditorTheme(fakeMonaco as never, 'coolsolve-catppuccin-dark-appbg-catppuccin-dark');
+    assert.ok(defined.includes('coolsolve-catppuccin-dark-appbg-catppuccin-dark'));
+  });
+
+  it('preserves tab ordering and never evicts dirty tabs', async () => {
+    const makeTab = (id: string, dirty: boolean) => ({
+      id, name: id + '.eescode', filePath: '', modelName: '', libraryId: '',
+      eescode: '', initials: '', sol: '', conf: '', dirty,
+      lastResult: null, parametricResult: null, parametricStudies: [], activeStudyId: null,
+      integralTable: null, integralCSV: '', lookupTables: [], lookupTableCSVs: {},
+      selectedLookupTable: null, resultIsLive: false, userUnitOverrides: [],
+    });
+    // Fill with 10 dirty tabs: newTab should not drop any dirty tab
+    const tabs = Array.from({ length: 10 }, (_, i) => makeTab('tab' + i, true));
+    useModelStore.setState({ openTabs: tabs, activeTabId: 'tab9', dirty: true });
+    useModelStore.getState().newTab();
+    const currentTabs = useModelStore.getState().openTabs;
+    // 10 dirty tabs + 1 new tab = 11 tabs (none of the dirty tabs evicted)
+    assert.strictEqual(currentTabs.length, 11);
+    assert.ok(tabs.every((t) => currentTabs.some((ct) => ct.id === t.id)));
+    await tick();
+  });
+
+  it('clearModel cancels pending conf debounce write', async () => {
+    await tick();
+    calls.length = 0;
+    useModelStore.setState({ conf: 'testConf = true', activeTabId: 'testTab' });
+    useModelStore.getState().scheduleConfPut();
+    useModelStore.getState().clearModel();
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual(calls.some((c) => c.body?.includes('testConf = true')), false);
+  });
+
+  it('safeSpreadsheetCell preserves valid numbers and escapes formula injection', async () => {
+    const { safeSpreadsheetCell } = await import('../utils/csv.ts');
+    // Genuine numbers (positive, negative, exponents) remain untouched
+    assert.strictEqual(safeSpreadsheetCell('-15.2'), '-15.2');
+    assert.strictEqual(safeSpreadsheetCell('+42'), '+42');
+    assert.strictEqual(safeSpreadsheetCell('0'), '0');
+    assert.strictEqual(safeSpreadsheetCell('-1e-4'), '-1e-4');
+    // Non-numeric spreadsheet formula triggers are quoted
+    assert.strictEqual(safeSpreadsheetCell('=1+1'), "'=1+1");
+    assert.strictEqual(safeSpreadsheetCell('-cmd|'), "'-cmd|");
+    assert.strictEqual(safeSpreadsheetCell('@SUM(A1:A5)'), "'@SUM(A1:A5)");
+    assert.strictEqual(safeSpreadsheetCell('+malicious'), "'+malicious");
+  });
+
+  it('insertAtCursor returns false when editor is unmounted', async () => {
+    const { insertAtCursor } = await import('../components/editorUtils.ts');
+    assert.strictEqual(insertAtCursor('test\n'), false);
+  });
+
+  it('resolveUnitFromMap consistently lets last duplicate win for array and Map', async () => {
+    const { buildParsedMap, resolveUnitFromMap } = await import('../utils/parsedUnits.ts');
+    const pMap = buildParsedMap([{ name: 'T', units: 'C', unitSource: 'code', isImposed: false }]);
+    const overrides = [
+      { variableName: 't', units: 'K' },
+      { variableName: 't', units: 'F' },
+    ];
+    // Array format
+    const resArray = resolveUnitFromMap('T', pMap, overrides);
+    assert.strictEqual(resArray.units, 'F');
+    // Map format
+    const { buildOverrideMap } = await import('../utils/parsedUnits.ts');
+    const resMap = resolveUnitFromMap('T', pMap, buildOverrideMap(overrides));
+    assert.strictEqual(resMap.units, 'F');
+  });
+
+  it('diagramStore initFluids updates modelFluids on subsequent calls', async () => {
+    const { useDiagramStore } = await import('../stores/diagramStore.ts');
+    const realFetch = globals.fetch;
+    try {
+      let currentModelFluids = ['Ammonia'];
+      globals.fetch = (async (url: string | URL | Request) => {
+        const p = String(url);
+        const ok = (v: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => v, text: async () => '' });
+        if (p.endsWith('/coolprop/fluids')) {
+          return ok({
+            fluids: [
+              { name: 'Water', coolpropName: 'Water', type: 'pure', hasDome: true },
+              { name: 'Ammonia', coolpropName: 'Ammonia', type: 'pure', hasDome: true },
+            ],
+            modelFluids: currentModelFluids,
+          });
+        }
+        return ok({ fluid: 'Ammonia', critical: { T: 1, P: 2, H: 3, S: 4, D: 5 }, triplePoint: { T: 1 }, liquid: {}, vapor: {}, nPoints: 3, computeTime_ms: 5 });
+      }) as typeof fetch;
+
+      await useDiagramStore.getState().initFluids();
+      assert.deepStrictEqual(useDiagramStore.getState().modelFluids, ['Ammonia']);
+
+      // Switch model / tab to Water
+      currentModelFluids = ['Water'];
+      await useDiagramStore.getState().initFluids();
+      assert.deepStrictEqual(useDiagramStore.getState().modelFluids, ['Water']);
+    } finally {
+      globals.fetch = realFetch;
+    }
+  });
+});
+
+describe('Audit round 2: sparse arrays, colors, conf, strict CSV, paging, names, presets', () => {
+  it('aligns sparse array columns by subscript with NaN gaps', async () => {
+    const { extractArrayColumns } = await import('../utils/arrayData.ts');
+    const cols = extractArrayColumns({ 'A[1]': 10, 'A[3]': 30, 'B[2]': 20, 'B[3]': 40 });
+    assert.deepStrictEqual(cols.get('A'), [10, NaN, 30]);
+    assert.deepStrictEqual(cols.get('B'), [NaN, 20, 40]);
+  });
+
+  it('rejects style-breaking colors in hover separators', async () => {
+    const { hoverSep } = await import('../utils/plotHover.ts');
+    assert.ok(!hoverSep('rgb(1,1,1);evil:1').includes('evil'));
+    assert.ok(!hoverSep('#fff;color:red').includes('color:red'));
+    assert.ok(hoverSep('#374151').includes('#374151'));
+  });
+
+  it('keeps # inside a value but still strips real comments', async () => {
+    const { parseKeyValueText, updateKeyValueLines } = await import('../utils/conf.ts');
+    assert.strictEqual(parseKeyValueText('path = C#lib\n').get('path'), 'C#lib');
+    assert.strictEqual(parseKeyValueText('k = 1 # note\n').get('k'), '1');
+    assert.ok(updateKeyValueLines('path = C#lib\n', { other: '2' }).includes('path = C#lib'));
+  });
+
+  it('rejects short CSV rows instead of padding NaN', async () => {
+    const { parseCSVToTable } = await import('../utils/csv.ts');
+    assert.throws(() => parseCSVToTable('a,b,c\n1,2\n', 'short.csv'), /Malformed CSV/);
+  });
+
+  it('never returns Infinity or NaN page counts', async () => {
+    const { pageCount, clampPage } = await import('../utils/paging.ts');
+    assert.strictEqual(pageCount(100, 0), 1);
+    assert.strictEqual(clampPage(NaN, 100), 0);
+    assert.strictEqual(clampPage(99, 10), 0);
+  });
+
+  it('blocks Windows reserved file names', async () => {
+    const { sanitizeFilename } = await import('../utils/csv.ts');
+    assert.ok(!/^(con|nul)(\..*)?$/i.test(sanitizeFilename('CON')));
+    assert.strictEqual(sanitizeFilename('file.'), 'file');
+  });
+
+  it('matches full solver sets and the LM alias only', async () => {
+    const { detectPipelinePreset, ALL_SOLVERS } = await import('../utils/pipelinePreset.ts');
+    assert.strictEqual(detectPipelinePreset(new Map([['solverPipeline', ALL_SOLVERS], ['pipelineMode', 'sequential']])), 'sequential');
+    assert.strictEqual(detectPipelinePreset(new Map([['solverPipeline', 'LM'], ['pipelineMode', 'sequential']])), 'lm-only');
+    assert.strictEqual(detectPipelinePreset(new Map([['solverPipeline', 'Newton, TrustRegion'], ['pipelineMode', 'sequential']])), 'custom');
+  });
+});
+
+describe('Parametric studies: delete clears the display, new runs take over', () => {
+  const study = (id: string) => ({
+    id, name: id, sweepVariables: [], result: { successCount: 1, totalPoints: 1, results: [] }, timestamp: 0,
+  });
+  const studyTab = (id: string, studies: never[], activeId: string | null, result: unknown) => ({
+    id,
+    name: `${id}.eescode`,
+    filePath: '',
+    modelName: '',
+    libraryId: '',
+    eescode: '',
+    initials: '',
+    sol: '',
+    conf: '',
+    dirty: false,
+    ...noResults(),
+    parametricStudies: studies,
+    activeStudyId: activeId,
+    parametricResult: result,
+  });
+
+  it('deleting the displayed study clears its table and plot', () => {
+    const s1 = study('s1');
+    const s2 = study('s2');
+    useModelStore.setState({
+      openTabs: [studyTab('a', [s1, s2] as never[], 's1', { marker: 'R1' })],
+      activeTabId: 'a',
+      parametricStudies: [s1, s2],
+      activeStudyId: 's1',
+      parametricResult: { marker: 'R1' },
+    } as never);
+    useModelStore.getState().removeParametricStudy('s1');
+    const s = useModelStore.getState();
+    assert.deepStrictEqual(s.parametricStudies.map((x) => x.id), ['s2']);
+    assert.strictEqual(s.parametricResult, null);
+    assert.strictEqual(s.activeStudyId, null);
+    const entry = s.openTabs.find((t) => t.id === 'a')!;
+    assert.deepStrictEqual(entry.parametricStudies.map((x) => x.id), ['s2']);
+    assert.strictEqual(entry.parametricResult, null);
+    assert.strictEqual(entry.activeStudyId, null);
+  });
+
+  it('deleting another study leaves the display alone', () => {
+    const s1 = study('s1');
+    const s2 = study('s2');
+    useModelStore.setState({
+      openTabs: [studyTab('a', [s1, s2] as never[], 's1', { marker: 'R1' })],
+      activeTabId: 'a',
+      parametricStudies: [s1, s2],
+      activeStudyId: 's1',
+      parametricResult: { marker: 'R1' },
+    } as never);
+    useModelStore.getState().removeParametricStudy('s2');
+    const s = useModelStore.getState();
+    assert.deepStrictEqual(s.parametricStudies.map((x) => x.id), ['s1']);
+    assert.deepStrictEqual(s.parametricResult, { marker: 'R1' });
+    assert.strictEqual(s.activeStudyId, 's1');
+  });
+
+  it('saving a finished study switches the display to it', () => {
+    const s1 = study('s1');
+    const s3 = study('s3');
+    useModelStore.setState({
+      openTabs: [studyTab('a', [s1] as never[], 's1', { marker: 'R1' })],
+      activeTabId: 'a',
+      parametricStudies: [s1],
+      activeStudyId: 's1',
+      parametricResult: { marker: 'R1' },
+    } as never);
+    useModelStore.getState().saveParametricStudy('a', s3 as never, { marker: 'R3' } as never);
+    const s = useModelStore.getState();
+    assert.deepStrictEqual(s.parametricResult, { marker: 'R3' });
+    assert.strictEqual(s.activeStudyId, 's3');
+    assert.deepStrictEqual(s.parametricStudies.map((x) => x.id), ['s1', 's3']);
+    const entry = s.openTabs.find((t) => t.id === 'a')!;
+    assert.deepStrictEqual(entry.parametricResult, { marker: 'R3' });
+    assert.strictEqual(entry.activeStudyId, 's3');
+  });
+
+  it('loadStudy switches between studies without modal prompt and sets sweep inputs', () => {
+    useParametricStore.setState({ var1Name: 'old_var', var2Name: '' });
+    const studyToLoad = {
+      id: 's2',
+      name: 's2',
+      sweepVariables: [
+        { name: 'T', values: [300, 350, 400] },
+        { name: 'P', values: [1, 2] },
+      ],
+      result: { successCount: 6, totalPoints: 6, results: [] },
+      timestamp: 0,
+    };
+    useModelStore.setState({
+      openTabs: [studyTab('a', [] as never[], 's1', null)],
+      activeTabId: 'a',
+      activeStudyId: 's1',
+      parametricResult: null,
+    } as never);
+
+    useParametricStore.getState().loadStudy(studyToLoad as never);
+
+    const m = useModelStore.getState();
+    assert.strictEqual(m.activeStudyId, 's2');
+    assert.deepStrictEqual(m.parametricResult, studyToLoad.result);
+
+    const p = useParametricStore.getState();
+    assert.strictEqual(p.var1Name, 'T');
+    assert.strictEqual(p.var1Min, '300');
+    assert.strictEqual(p.var1Max, '400');
+    assert.strictEqual(p.var1Steps, '3');
+    assert.strictEqual(p.var2Name, 'P');
+    assert.strictEqual(p.var2Min, '1');
+    assert.strictEqual(p.var2Max, '2');
+    assert.strictEqual(p.var2Steps, '2');
+  });
+});
+
+describe('Audit round 3: debounces, tab modelName sync, parametric stop race, table cache vs edit, ragged CSV', () => {
+  it('loadFile and switchTab cancel pending eescode/conf debounces instead of overwriting the new model', async () => {
+    await tick();
+    calls.length = 0;
+    useModelStore.setState({
+      openTabs: [
+        { id: 'a', name: 'a.eescode', filePath: '', modelName: 'modelA', libraryId: '', eescode: 'old_code', initials: '', sol: '', conf: 'old_conf', dirty: true, ...noResults() },
+        { id: 'b', name: 'b.eescode', filePath: '', modelName: 'modelB', libraryId: '', eescode: 'new_code', initials: '', sol: '', conf: 'new_conf', dirty: false, ...noResults() },
+      ],
+      activeTabId: 'a',
+      modelName: 'modelA',
+      eescode: 'old_code',
+      initials: '',
+      conf: 'old_conf',
+      dirty: true,
+    } as never);
+    useModelStore.getState().scheduleConfPut();
+    useModelStore.getState().scheduleEescodePut();
+
+    // Switching tabs cancels both timers and syncs the new tab's modelName
+    useModelStore.getState().switchTab('b');
+    await tick();
+    const switchPaths = calls.map((c) => c.path);
+    assert.deepStrictEqual(switchPaths, [
+      '/api/v1/files/eescode',
+      '/api/v1/files/initials',
+      '/api/v1/files/conf',
+      '/api/v1/model-name',
+    ]);
+    assert.strictEqual(JSON.parse(calls[3].body ?? '{}').modelName, 'modelB');
+  });
+
+  it('showSessionModel cancels pending debounces and does not re-upload session files', async () => {
+    const { showSessionModel } = await import('../utils/sessionModel.ts');
+    useModelStore.getState().setEescode('stale_typing');
+    useModelStore.getState().scheduleEescodePut();
+    calls.length = 0;
+    await showSessionModel();
+    const putCalls = calls.filter((c) => c.method === 'PUT');
+    assert.strictEqual(putCalls.length, 0);
+  });
+
+  it('stopStudy closes the stream immediately and ignores late SSE events', async () => {
+    setRunBusy(false);
+    useModelStore.setState({ solving: false, eescode: 'x = 1', initials: '', conf: '' });
+    useParametricStore.setState({
+      var1Name: 'x',
+      var1Min: '1',
+      var1Max: '2',
+      var1Steps: '2',
+      var2Name: '',
+      running: false,
+      error: '',
+    });
+    await useParametricStore.getState().runStudy();
+    assert.strictEqual(useParametricStore.getState().running, true);
+    const es = FakeEventSource.last!;
+    await useParametricStore.getState().stopStudy();
+    assert.strictEqual(es.closed, true);
+    assert.strictEqual(useParametricStore.getState().running, false);
+
+    // A late message on the old EventSource must be ignored
+    const beforeCount = useModelStore.getState().parametricStudies.length;
+    es.onmessage?.({ data: JSON.stringify({ type: 'done' }) });
+    await tick();
+    assert.strictEqual(useModelStore.getState().parametricStudies.length, beforeCount);
+  });
+
+  it('lazy-caching a lookup table CSV during a solve keeps resultIsLive true', async () => {
+    setRunBusy(false);
+    useModelStore.setState({ solving: false, eescode: 'x = 1', initials: '', conf: '', lookupTableDirty: false });
+    await handleSolve();
+    const es = FakeEventSource.last!;
+    // Read-only cache populate from getTableCSV
+    useModelStore.getState().setLookupTableCSV('T1', 'a,b\n1,2\n', true);
+    es.onmessage!({
+      data: JSON.stringify({
+        type: 'done',
+        message: 'ok',
+        result: { success: true, status: 'Solved', variables: { x: 1 } },
+      }),
+    });
+    assert.strictEqual(useModelStore.getState().resultIsLive, true);
+  });
+
+  it('normalizeGridRows pads ragged rows and header-only imports into a rectangular grid', async () => {
+    const { normalizeGridRows } = await import('../utils/csv.ts');
+    assert.deepStrictEqual(normalizeGridRows([['A'], ['1', '2', '3'], ['4']]), [
+      ['A', 'Column2', 'Column3'],
+      ['1', '2', '3'],
+      ['4', '', ''],
+    ]);
+    assert.deepStrictEqual(normalizeGridRows([['X', 'Y']]), [
+      ['X', 'Y'],
+      ['', ''],
+    ]);
+  });
+});
+
+after(restoreGlobals);

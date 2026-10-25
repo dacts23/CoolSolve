@@ -6,10 +6,11 @@
  * read back from the session as for any opened model (`showSessionModel`).
  */
 
-import { api } from '../api/client';
-import { useModelStore } from '../stores/modelStore';
-import { toErrMsg } from './errors';
-import { showSessionModel } from './sessionModel';
+import { api } from '../api/client.ts';
+import { useModelStore } from '../stores/modelStore.ts';
+import { toErrMsg } from './errors.ts';
+import { isRunBusy } from './runBusy.ts';
+import { showSessionModel } from './sessionModel.ts';
 
 /** Address of the library dashboard (all models, blocked ones included). */
 export const LIBRARY_DASHBOARD_URL = '/library/';
@@ -24,7 +25,24 @@ export const libraryModelPageUrl = (id: string) => `/library/#${encodeURICompone
  */
 export async function openLibraryModel(id: string, file?: string, allowBack = true): Promise<boolean> {
   const { addConsoleLine, setCanGoBack } = useModelStore.getState();
+  if (isRunBusy()) {
+    addConsoleLine('>>> Cannot open a library model while a run is in progress.');
+    return false;
+  }
+  {
+    const s = useModelStore.getState();
+    if (s.dirty || s.lookupTableDirty) {
+      if (!window.confirm('You have unsaved edits. Open the library model anyway and lose them?')) return false;
+      s.setLookupTableDirty(false);
+    }
+  }
+  // Server joins id/file to a path: reject traversal before sending.
+  if (/(\.\.|[\\/])/.test(id) || (file && /(\.\.|[\\/])/.test(file))) {
+    addConsoleLine(`>>> ERROR opening library model ${id}: invalid name`);
+    return false;
+  }
   try {
+    useModelStore.getState().cancelPendingPuts();
     const res = await api.openLibraryModel(id, file);
     await showSessionModel();
     setCanGoBack(allowBack);

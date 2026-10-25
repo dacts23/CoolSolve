@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { toErrMsg } from '../utils/errors';
 import { FileText, RefreshCw, ChevronDown, ChevronRight, Layers } from 'lucide-react';
 import SplitPane from './SplitPane';
+import { EmptyState } from './SetupShell';
 
 interface DebugFile {
   name: string;
@@ -22,7 +23,7 @@ export default function DebugViewer() {
 
   // Dynamic (INTEGRAL) models are marched step by step, so the solver reports
   // no static block decomposition for them - say so instead of promising one.
-  const isDynamic = /\binegral\s*\(/i.test(eescode);
+  const isDynamic = /\bintegral\s*\(/i.test(eescode);
 
   const refresh = useCallback(async () => {
     try {
@@ -37,12 +38,17 @@ export default function DebugViewer() {
     refresh();
   }, [refresh, lastResult]);
 
+  const openSeq = useRef(0);
+
   const handleSelectFile = useCallback(async (name: string) => {
+    const seq = ++openSeq.current;
     openDebugFile(name, '', true);
     try {
       const res = await api.getDebugFile(name);
+      if (seq !== openSeq.current) return;
       openDebugFile(name, res.content, false);
     } catch (err: unknown) {
+      if (seq !== openSeq.current) return;
       openDebugFile(name, `Error loading file: ${toErrMsg(err)}`, false);
     }
   }, [openDebugFile]);
@@ -61,56 +67,33 @@ export default function DebugViewer() {
   if (blocks.length === 0 && files.length === 0) {
     return (
       <div className="debug-viewer">
-        <div className="parametric-empty-state" style={{ height: '100%' }}>
-          <div className="empty-state-content">
-            <div className="empty-state-icon">
-              <Layers size={36} />
-            </div>
-            <h2>Solver Debug & Decomposition</h2>
-            {isDynamic ? (
-              <>
-                <p>
-                  Block decomposition is not available for dynamic (INTEGRAL) models: the
-                  trajectory is marched step by step, so there is no static block table.
-                  The <strong>Integral</strong> panel shows the recorded trajectory instead.
-                </p>
-                <div className="empty-state-steps">
-                  <div className="step-item">
-                    <span className="step-num">1</span>
-                    <span>Press <strong>Ctrl+Shift+Enter</strong> (Debug Solve) to generate the trace files</span>
-                  </div>
-                  <div className="step-item">
-                    <span className="step-num">2</span>
-                    <span>Open <strong>integral.md</strong> or <strong>integral_table.csv</strong> below to inspect the run</span>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <p>
-                  Inspect equation block partitioning, Tarjan SCC decomposition, and per-block solver residuals.
-                </p>
-                <div className="empty-state-steps">
-                  <div className="step-item">
-                    <span className="step-num">1</span>
-                    <span>Open or edit your model in the Code Editor</span>
-                  </div>
-                  <div className="step-item">
-                    <span className="step-num">2</span>
-                    <span>Press <strong>F2</strong> (Solve) or <strong>Ctrl+Shift+Enter</strong> (Debug Solve)</span>
-                  </div>
-                  <div className="step-item">
-                    <span className="step-num">3</span>
-                    <span>Examine block-by-block convergence and generated analysis files</span>
-                  </div>
-                </div>
-              </>
-            )}
+        <EmptyState
+          style={{ height: '100%' }}
+          icon={<Layers size={36} />}
+          title="Solver Debug & Decomposition"
+          description={
+            isDynamic
+              ? <>Block decomposition is not available for dynamic (INTEGRAL) models: the trajectory is marched step by step, so there is no static block table. The <strong>Integral</strong> panel shows the recorded trajectory instead.</>
+              : 'Inspect equation block partitioning, Tarjan SCC decomposition, and per-block solver residuals.'
+          }
+          steps={
+            isDynamic
+              ? [
+                  <>Press <strong>Ctrl+Shift+Enter</strong> (Debug Solve) to generate the trace files</>,
+                  <>Open <strong>integral.md</strong> or <strong>integral_table.csv</strong> below to inspect the run</>,
+                ]
+              : [
+                  'Open or edit your model in the Code Editor',
+                  <>Press <strong>F2</strong> (Solve) or <strong>Ctrl+Shift+Enter</strong> (Debug Solve)</>,
+                  'Examine block-by-block convergence and generated analysis files',
+                ]
+          }
+          actions={
             <button className="toolbar-btn" onClick={refresh} style={{ marginTop: 8 }}>
               <RefreshCw size={13} /> Refresh
             </button>
-          </div>
-        </div>
+          }
+        />
       </div>
     );
   }

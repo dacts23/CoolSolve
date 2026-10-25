@@ -7,6 +7,7 @@ import SettingsModal from './SettingsModal';
 import UsageStats from './UsageStats';
 import { insertAtCursor } from './editorUtils';
 import { openLibraryModel, LIBRARY_DASHBOARD_URL, libraryModelPageUrl } from '../utils/library';
+import { parseUnitSystemTokens } from '../utils/unitSystem';
 import type { LibraryMenuResponse, LibraryMenuCategory, LibraryMenuModel } from '../api/types';
 
 const THERMO_PROPERTIES = [
@@ -92,7 +93,8 @@ function FunctionInfoModal({ onClose }: { onClose: () => void }) {
 
   const preview = useMemo(() => {
     if (category !== 'thermo') return selectedSnippet;
-    const sfx = suffix.trim() ? `_${suffix.trim()}` : '';
+    // Suffix lands in pasted equations: keep it a safe identifier fragment.
+    const sfx = suffix.trim().replace(/[^A-Za-z0-9_]/g, '').slice(0, 20) ? `_${suffix.trim().replace(/[^A-Za-z0-9_]/g, '').slice(0, 20)}` : '';
     const fArg = /[-%]/.test(fluid) ? `'${fluid}'` : fluid;
     if (prop.fn === 'T_sat') return `T_sat${sfx} = T_sat(${fArg}, P=P${sfx})`;
     if (prop.fn === 'P_sat') return `P_sat${sfx} = P_sat(${fArg}, T=T${sfx})`;
@@ -237,8 +239,7 @@ function FunctionInfoModal({ onClose }: { onClose: () => void }) {
 function UnitSystemModal({ onClose }: { onClose: () => void }) {
   const eescode = useModelStore((s) => s.eescode);
   const setEescode = useModelStore((s) => s.setEescode);
-  const existingMatch = eescode.match(/^\s*\$UnitSystem\s+([^\r\n]+)/im);
-  const existingTokens = existingMatch ? existingMatch[1].trim().split(/\s+/) : [];
+  const existingTokens = parseUnitSystemTokens(eescode);
 
   const pick = (opts: string[], fallback: string) =>
     opts.find((o) => existingTokens.some((t) => t.toLowerCase() === o.toLowerCase())) || fallback;
@@ -258,6 +259,9 @@ function UnitSystemModal({ onClose }: { onClose: () => void }) {
     } else {
       next = `${directive}\n${eescode}`;
     }
+    // Direct push (not debounced): drop any pending typing write first so a
+    // stale timer cannot overwrite this directive change.
+    useModelStore.getState().cancelPendingPuts();
     setEescode(next);
     api.putEescode(next).catch(() => {});
     onClose();
@@ -281,14 +285,14 @@ function UnitSystemModal({ onClose }: { onClose: () => void }) {
 
             <label className="fn-label">Pressure</label>
             <div className="segmented-row">
-              {['Pa', 'kPa', 'bar', 'MPa', 'atm'].map((u) => (
+              {['Pa', 'kPa', 'bar', 'MPa', 'atm', 'psia'].map((u) => (
                 <button key={u} className={`seg-btn ${press === u ? 'active' : ''}`} onClick={() => setPress(u)}>{u}</button>
               ))}
             </div>
 
             <label className="fn-label">Energy</label>
             <div className="segmented-row">
-              {['J', 'kJ'].map((u) => (
+              {['J', 'kJ', 'cal', 'kcal', 'Btu'].map((u) => (
                 <button key={u} className={`seg-btn ${energy === u ? 'active' : ''}`} onClick={() => setEnergy(u)}>{u}</button>
               ))}
             </div>

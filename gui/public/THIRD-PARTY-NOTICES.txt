@@ -1,0 +1,19 @@
+CoolSolve-Canary bundles the following third-party fonts (webfont files
+served with the GUI). Each remains under its own license:
+
+- Cascadia Code — Copyright (c) Microsoft / Cascadia Code Project Authors
+  Licensed under the SIL Open Font License, Version 1.1.
+  https://github.com/microsoft/cascadia-code
+
+- Fira Code — Copyright (c) The Fira Code Project Authors
+  Licensed under the SIL Open Font License, Version 1.1.
+  https://github.com/tonsky/FiraCode
+
+- JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono)
+  Licensed under the SIL Open Font License, Version 1.1.
+
+SIL Open Font License 1.1: http://scripts.sil.org/OFL
+Full license texts ship with their Fontsource packages
+(@fontsource/cascadia-code, @fontsource/fira-code,
+@fontsource/jetbrains-mono).

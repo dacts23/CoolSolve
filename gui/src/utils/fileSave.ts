@@ -26,7 +26,12 @@ export async function saveFileWithPicker(
         types,
       });
       const writable = await handle.createWritable();
-      await writable.write(data);
+      try {
+        await writable.write(data);
+      } catch {
+        await writable.abort().catch(() => {});
+        return { saved: false };
+      }
       await writable.close();
       return { saved: true, name: handle.name };
     } catch (err: unknown) {
@@ -37,7 +42,9 @@ export async function saveFileWithPicker(
     }
   }
 
-  // Fallback for browsers / environments without showSaveFilePicker
+  // Fallback: a plain download starts here. The browser gives no
+  // confirmation, so saved means "started", not "on disk".
+  if (typeof document === 'undefined') return { saved: false };
   const blob = typeof data === 'string' ? new Blob([data], { type: 'text/plain;charset=utf-8' }) : data;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -45,9 +52,13 @@ export async function saveFileWithPicker(
   a.download = suggestedName;
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
+  // Revoke soon: long holds leak memory on rapid exports.
+  const cleanup = () => {
+    try {
+      if (a.parentNode) document.body.removeChild(a);
+    } catch { /* already removed */ }
     URL.revokeObjectURL(url);
-  }, 100);
+  };
+  setTimeout(cleanup, 5000);
   return { saved: true, name: suggestedName };
 }

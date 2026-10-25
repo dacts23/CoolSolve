@@ -580,9 +580,10 @@ body {
 }
 
 /* Table convention: numeric columns are right-aligned in the header AND the
-   data, so every header sits on its own column's edge. */
-.variable-table .value-cell { text-align: right; }
-.variable-table .row-num { text-align: right; }
+   data, so every header sits on its own column's edge. Values never wrap:
+   grouped digits use a non-breaking space and long exponentials scroll. */
+.variable-table .value-cell { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.variable-table .row-num { text-align: right; white-space: nowrap; }
 .variable-table .value-cell.solved { color: var(--success-color); }
 
 .table-footer-status {
@@ -1776,6 +1777,7 @@ body {
 .parametric-plot-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 11px;
   color: var(--text-secondary);
@@ -1812,6 +1814,7 @@ body {
   font-weight: 600;
   color: var(--accent-color);
   text-align: right;
+  white-space: nowrap;
 }
 .parametric-table .status-ok { color: var(--success-color); }
 .parametric-table .status-fail { color: var(--error-color); }
@@ -2143,22 +2146,6 @@ body.is-resizing-pane .monaco-editor .minimap {
 }
 
 .btn-secondary:hover { background: var(--bg-tertiary); }
-
-.btn-danger {
-  padding: 4px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--error-color);
-  background: var(--error-color);
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.btn-danger:hover {
-  opacity: 0.88;
-}
 
 .btn-danger {
   padding: 4px 12px;
@@ -2750,6 +2737,8 @@ select option, select optgroup { background: var(--bg-secondary); color: var(--t
   max-width: 320px;
   max-height: 240px;
   overflow-y: auto;
+  /* Wheeling over the open menu must not move the panel behind it. */
+  overscroll-behavior: contain;
   margin: 0;
   padding: 4px;
   list-style: none;

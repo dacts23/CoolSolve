@@ -1,18 +1,9 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
 import { parseKeyValueText, updateKeyValueLines } from '../utils/conf';
 import { fmt } from '../stores/parametricStore';
-import type { VariableInfo } from '../api/types';
-
-/** Build a case-insensitive lookup map from parsedVariables */
-function buildParsedMap(parsed: VariableInfo[]): Map<string, VariableInfo> {
-  const map = new Map<string, VariableInfo>();
-  for (const v of parsed) {
-    map.set(v.name.toLowerCase(), v);
-  }
-  return map;
-}
+import { buildOverrideMap, buildParsedMap, isImposedFromMap, resolveUnitFromMap } from '../utils/parsedUnits.ts';
 
 /** CSS class for unit source color coding */
 function unitSourceClass(source: string): string {
@@ -31,6 +22,9 @@ export default function VariableTable() {
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  // Enter commits and unmounts the input, whose blur then fires with stale
+  // props: ignore that trailing blur so one edit writes exactly once.
+  const committedRef = useRef<string | null>(null);
   const lastResult = useModelStore((s) => s.lastResult);
   const initials = useModelStore((s) => s.initials);
   const setInitials = useModelStore((s) => s.setInitials);
@@ -39,22 +33,17 @@ export default function VariableTable() {
 
   const initialsMap = useMemo(() => parseKeyValueText(initials), [initials]);
   const parsedMap = useMemo(() => buildParsedMap(parsedVariables), [parsedVariables]);
+  const overrideMap = useMemo(() => buildOverrideMap(userUnitOverrides), [userUnitOverrides]);
 
   /** Get effective unit for a variable: user override > parsed */
   const getUnit = useCallback((name: string): { units: string; source: string } => {
-    const userOvr = userUnitOverrides.find(
-      (o) => o.variableName.toLowerCase() === name.toLowerCase()
-    );
-    if (userOvr) return { units: userOvr.units, source: 'user' };
-    const info = parsedMap.get(name.toLowerCase());
-    if (info && info.units) return { units: info.units, source: info.unitSource || 'code' };
-    return { units: '', source: '' };
-  }, [parsedMap, userUnitOverrides]);
+    const r = resolveUnitFromMap(name, parsedMap, overrideMap);
+    return { units: r.units, source: r.source };
+  }, [parsedMap, overrideMap]);
 
   /** Check if a variable is imposed (var = constant) */
   const isImposed = useCallback((name: string): boolean => {
-    const info = parsedMap.get(name.toLowerCase());
-    return info?.isImposed ?? false;
+    return isImposedFromMap(name, parsedMap);
   }, [parsedMap]);
 
   const variables = useMemo(() => {
@@ -118,22 +107,29 @@ export default function VariableTable() {
   }, [variables, filter, filterMode, isImposed, getUnit]);
 
   const handleInitialClick = useCallback((name: string, current: string) => {
+    committedRef.current = null;
     setEditingCell(name);
     setEditValue(current);
   }, []);
 
   const commitEdit = useCallback((name: string) => {
+    if (committedRef.current === name) return;
+    committedRef.current = name;
     setEditingCell(null);
     const trimmed = editValue.trim();
     const newText = updateKeyValueLines(initials, { [name]: trimmed || undefined });
     setInitials(newText);
-    api.putInitials(newText).catch(() => {});
+    api.putInitials(newText).catch((err) =>
+      useModelStore.getState().addConsoleLine(`>>> ERROR saving guesses: ${err instanceof Error ? err.message : String(err)}`)
+    );
   }, [editValue, initials, setInitials]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent, name: string) => {
     if (e.key === 'Enter') {
       commitEdit(name);
     } else if (e.key === 'Escape') {
+      // Mark committed so the unmount blur does not write back the edit.
+      committedRef.current = name;
       setEditingCell(null);
     }
   }, [commitEdit]);

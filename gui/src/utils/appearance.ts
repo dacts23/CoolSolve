@@ -336,23 +336,28 @@ export const ACCENTS = [
 export type AccentId = (typeof ACCENTS)[number]['id'];
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-export const systemTheme = (): 'light' | 'dark' =>
-  window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+export const systemTheme = (): 'light' | 'dark' => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'dark';
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+};
+
+export function normalizePaletteFamily(choice: string): string {
+  const base = (choice || 'catppuccin').replace(/-(dark|light)$/, '');
+  const legacy: Record<string, string> = {
+    default: 'onedark', graphene: 'onedark', light: 'onedark', classic: 'onedark',
+    atom: 'onedark', 'atom-app': 'onedark', nord: 'tokyo-night', dracula: 'shades-of-purple',
+  };
+  return legacy[base] ?? base;
+}
 
 export function getPalette(paletteId: string, mode: 'light' | 'dark'): BackgroundPalette {
   const isDark = mode === 'dark';
-  let cleanId = (paletteId || 'catppuccin').replace(/-(dark|light)$/, '');
-  if (cleanId === 'default' || cleanId === 'graphene' || cleanId === 'light' || cleanId === 'classic') cleanId = 'onedark';
-  if (cleanId === 'nord') cleanId = 'tokyo-night';
-  if (cleanId === 'dracula') cleanId = 'shades-of-purple';
+  const family = normalizePaletteFamily(paletteId);
 
-  let found = APP_PALETTES.find((p) => p.id === `${cleanId}-${mode}`);
-  if (!found) {
-    found = APP_PALETTES.find((p) => p.family === cleanId && p.dark === isDark);
-  }
-  if (!found) {
-    found = APP_PALETTES.find((p) => p.id === paletteId);
-  }
+  // Explicit id wins (a light request for catppuccin-light must stay light).
+  let found = APP_PALETTES.find((p) => p.id === paletteId);
+  if (!found) found = APP_PALETTES.find((p) => p.id === `${family}-${mode}`);
+  if (!found) found = APP_PALETTES.find((p) => p.family === family && p.dark === isDark);
   if (!found) {
     found = APP_PALETTES.find((p) => p.dark === isDark) ?? APP_PALETTES[0];
   }
@@ -401,16 +406,8 @@ export const DEFAULT_EDITOR_FONT_SIZE = 14;
 
 export const STANDARD_FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24] as const;
 
-export const EDITOR_FONT_SIZES = [
-  { id: '10', value: 10, label: '10 px' },
-  { id: '11', value: 11, label: '11 px' },
-  { id: '12', value: 12, label: '12 px' },
-  { id: '13', value: 13, label: '13 px' },
-  { id: '14', value: 14, label: '14 px (Default)' },
-  { id: '15', value: 15, label: '15 px' },
-  { id: '16', value: 16, label: '16 px' },
-  { id: '18', value: 18, label: '18 px' },
-  { id: '20', value: 20, label: '20 px' },
-  { id: '22', value: 22, label: '22 px' },
-  { id: '24', value: 24, label: '24 px' },
-] as const;
+export const EDITOR_FONT_SIZES = STANDARD_FONT_SIZES.map((value) => ({
+  id: String(value),
+  value,
+  label: value === DEFAULT_EDITOR_FONT_SIZE ? `${value} px (Default)` : `${value} px`,
+})) as readonly { id: string; value: number; label: string }[];

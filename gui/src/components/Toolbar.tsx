@@ -15,12 +15,13 @@ import {
   triggerEditorAction,
 } from './editorUtils';
 import { exportAllPlots } from '../utils/exportPlots';
+import { extractArrayGrid } from '../utils/arrayData';
 import { toErrMsg } from '../utils/errors';
-import { showSessionModel } from '../utils/sessionModel';
+import { isRunBusy } from '../utils/runBusy';
+import { showSessionModel, openModelFile } from '../utils/sessionModel';
 import { STATS_LOCAL_ONLY } from './UsageStats';
 import { useParametricStore } from '../stores/parametricStore';
 import { exportArrayTableToCsv, exportParametricStudyToCsv } from '../utils/csv';
-import { extractArrayGrid } from '../utils/arrayData';
 import { saveFileWithPicker } from '../utils/fileSave';
 
 type MenuId = 'file' | 'edit' | 'options' | 'calculate' | 'tables' | 'plots' | 'help' | null;
@@ -48,12 +49,10 @@ export default function Toolbar() {
   const setInitials = useModelStore((s) => s.setInitials);
   const setCanGoBack = useModelStore((s) => s.setCanGoBack);
   const clearModel = useModelStore((s) => s.clearModel);
-  const loadFile = useModelStore((s) => s.loadFile);
   const lastResult = useModelStore((s) => s.lastResult);
   const resultIsLive = useModelStore((s) => s.resultIsLive);
   const activeTabId = useModelStore((s) => s.activeTabId);
   const closeTab = useModelStore((s) => s.closeTab);
-  const renameTab = useModelStore((s) => s.renameTab);
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -73,10 +72,14 @@ export default function Toolbar() {
 
   const [confirmNew, setConfirmNew] = useState(false);
   const [confirmCloseTab, setConfirmCloseTab] = useState<{ id: string; name: string } | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingOpenFile, setPendingOpenFile] = useState<File | null>(null);
+  const [confirmBack, setConfirmBack] = useState(false);
+  const [confirmResetGuesses, setConfirmResetGuesses] = useState(false);
 
+  // Same parser as the Arrays panel: the button is on exactly when export has rows.
   const hasArrayVariables = Boolean(
-    lastResult?.variables &&
-    Object.keys(lastResult.variables).some((k) => /^.+\[\d+(?:,[^\]]+)?\]$/.test(k))
+    lastResult?.variables && extractArrayGrid(lastResult.variables).baseNames.length > 0
   );
 
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
@@ -174,6 +177,16 @@ export default function Toolbar() {
   }, [openTabs, activeTabId, dirty, setActivityMode, closeTab]);
 
   // Open - supports equation files and .zip bundles
+  // Unsaved screen edits (dirty text or grid) are lost when the session is
+  // replaced, so confirm first instead of silently overwriting the tab.
+  const doOpenFile = useCallback(async (file: File) => {
+    try {
+      if (await openModelFile(file)) setActivityMode('code');
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
+    }
+  }, [addConsoleLine, setActivityMode]);
+
   const handleOpen = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -182,36 +195,28 @@ export default function Toolbar() {
       const files = (e.target as HTMLInputElement).files;
       if (!files || files.length === 0) return;
       const file = files[0];
-      try {
-        if (file.name.toLowerCase().endsWith('.zip')) {
-          const formData = new FormData();
-          formData.append('file', file);
-          const res = await api.uploadFiles(formData);
-          if (res.success) {
-            await showSessionModel();
-            setCanGoBack(true);
-            setActivityMode('code');
-            addConsoleLine(`>>> Opened bundle: ${res.files.join(', ')}`);
-          }
-        } else {
-          const text = await file.text();
-          const stem = file.name.replace(/\.[^.]+$/, '') || 'model';
-          const res = await api.newModel();
-          await api.setModelName(stem);
-          await api.putEescode(text);
-          loadFile(file.name, text, '', '', '', stem, '');
-          setCanGoBack(res.hadContent);
-          setActivityMode('code');
-          addConsoleLine(`>>> Opened file: ${file.name}`);
-        }
-      } catch (err: unknown) {
-        addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
+      if (file.size > 10 * 1024 * 1024) {
+        addConsoleLine('>>> ERROR: File exceeds 10 MB limit');
+        return;
       }
+      if (isRunBusy()) {
+        addConsoleLine('>>> Cannot open a file while a run is in progress.');
+        return;
+      }
+      const s = useModelStore.getState();
+      if (s.dirty || s.lookupTableDirty) {
+        setPendingOpenFile(file);
+        setConfirmOpen(true);
+        return;
+      }
+      await doOpenFile(file);
     };
     input.click();
-  }, [addConsoleLine, setCanGoBack, loadFile, setActivityMode]);
+  }, [addConsoleLine, doOpenFile]);
 
   // Save / Save As - download the equation file from the editor (.eescode only)
+  // This downloads code only: it must not clear the tab dirty flag (which also
+  // tracks initials/conf) and must not rename the tab or server model.
   const handleSaveScript = useCallback(async (logLabel: string) => {
     if (!eescode.trim()) {
       addConsoleLine('>>> Nothing to save');
@@ -225,24 +230,29 @@ export default function Toolbar() {
         filename,
         [{ description: 'CoolSolve Equation File (*.eescode)', accept: { 'text/plain': ['.eescode', '.ees', '.txt'] } }]
       );
-      if (result.saved && result.name) {
-        setDirty(false);
-        const newStem = result.name.replace(/\.[^.]+$/, '');
-        setModelName(newStem);
-        api.setModelName(newStem).catch(() => {});
-        renameTab(activeTabId, result.name);
-        addConsoleLine(`>>> ${logLabel}: ${result.name}`);
+      if (result.saved) {
+        addConsoleLine(`>>> ${logLabel}: ${result.name || filename} (code only — use Bundle for full model)`);
       }
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, modelName, setModelName, renameTab, activeTabId, addConsoleLine, setDirty]);
+  }, [eescode, modelName, addConsoleLine]);
 
   // Save Bundle - download the whole model as a .zip (script, config, tables, results)
   const handleSaveBundle = useCallback(async () => {
     if (!eescode.trim()) {
       addConsoleLine('>>> Nothing to save');
       return;
+    }
+    {
+      const s = useModelStore.getState();
+      if (s.lookupTableDirty) {
+        addConsoleLine('>>> Cannot save bundle: a lookup table has unsaved edits. Save the table first.');
+        setActivityMode('tables');
+        return;
+      }
+      // Bundle pushes memory directly, so drop pending debounces (no duplicate writes).
+      s.cancelPendingPuts();
     }
     try {
       // Flush the whole model so the bundle matches what the editor shows.
@@ -255,9 +265,8 @@ export default function Toolbar() {
         name = 'model';
       }
 
-      const res = await fetch(api.bundleUrl());
-      if (!res.ok) throw new Error(`Failed to download bundle (${res.status})`);
-      const blob = await res.blob();
+      // Authenticated request (session id in a header, not in the URL).
+      const blob = await api.downloadBundle();
       const filename = `${name}.zip`;
       const result = await saveFileWithPicker(blob, filename, [
         { description: 'ZIP Bundle (*.zip)', accept: { 'application/zip': ['.zip'] } },
@@ -277,7 +286,7 @@ export default function Toolbar() {
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [eescode, initials, modelName, setModelName, addConsoleLine, setDirty]);
+  }, [eescode, initials, modelName, setModelName, addConsoleLine, setDirty, setActivityMode]);
 
   // Export .sol
   const handleExportSol = useCallback(async () => {
@@ -315,8 +324,8 @@ export default function Toolbar() {
     addConsoleLine(`>>> Exported parametric study to CSV`);
   }, [activeParametricResult, modelName, addConsoleLine]);
 
-  // Back - restore previous model
-  const handleBack = useCallback(async () => {
+  // Back - restore previous model (replaces session, so confirm unsaved work)
+  const doBack = useCallback(async () => {
     try {
       const res = await api.goBack();
       if (res.success) {
@@ -329,6 +338,19 @@ export default function Toolbar() {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [addConsoleLine, setCanGoBack, setActivityMode]);
+
+  const handleBack = useCallback(async () => {
+    if (isRunBusy()) {
+      addConsoleLine('>>> Cannot restore a model while a run is in progress.');
+      return;
+    }
+    const s = useModelStore.getState();
+    if (s.dirty || s.lookupTableDirty) {
+      setConfirmBack(true);
+      return;
+    }
+    await doBack();
+  }, [addConsoleLine, doBack]);
 
   // Update guesses
   const handleUpdateGuesses = useCallback(async () => {
@@ -348,8 +370,8 @@ export default function Toolbar() {
     }
   }, [setInitials, addConsoleLine]);
 
-  // Reset guesses
-  const handleResetGuesses = useCallback(async () => {
+  // Reset guesses (wipes all initials: confirm first, one click is too easy)
+  const doResetGuesses = useCallback(async () => {
     try {
       await api.putInitials('');
       setInitials('');
@@ -359,13 +381,21 @@ export default function Toolbar() {
     }
   }, [setInitials, addConsoleLine]);
 
+  const handleResetGuesses = useCallback(() => {
+    setConfirmResetGuesses(true);
+  }, []);
+
   // Compile LaTeX report to PDF
   const handleLatexReport = useCallback(async () => {
     try {
       addConsoleLine('>>> Exporting plots...');
       let plots: { name: string; data: string }[] = [];
       try {
-        plots = await exportAllPlots();
+        const exported = await exportAllPlots();
+        plots = exported.plots;
+        if (exported.skipped > 0) {
+          addConsoleLine(`>>> Plot export: ${exported.total} charts found, only the first ${exported.plots.length} are included.`);
+        }
       } catch (plotErr: unknown) {
         addConsoleLine(`    Plot export error: ${toErrMsg(plotErr)} (continuing without plots)`);
       }
@@ -449,15 +479,16 @@ export default function Toolbar() {
       } else if ((e.ctrlKey || e.metaKey) && e.key === '`') {
         e.preventDefault();
         toggleBottomPanel();
-      } else if (e.key === 'Escape' && solving) {
+      } else if (e.key === 'Escape' && (solving || parametricRunning)) {
         e.preventDefault();
-        handleStopSolve();
+        if (parametricRunning) void useParametricStore.getState().stopStudy();
+        else void handleStopSolve();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [
-    solving, handleSolve, handleSaveScript, handleOpen, handleNew, handleCloseActiveTab,
+    solving, parametricRunning, handleSolve, handleSaveScript, handleOpen, handleNew, handleCloseActiveTab,
     handleUpdateGuesses, handleCheckEquations, handleStopSolve,
     tryHarderAvailable, setRightTab, setActiveModal, toggleRightPanel, toggleBottomPanel, setActivityMode,
   ]);
@@ -518,7 +549,15 @@ export default function Toolbar() {
         { label: 'Solve', shortcut: 'F2', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(false, false) },
         { label: 'Solve with Deep Search (Try Harder)', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(false, true) },
         { label: 'Debug Solve (Full Trace)', shortcut: 'Ctrl+Shift+Enter', disabled: solving || parametricRunning || !eescode.trim(), action: () => handleSolve(true, false) },
-        { label: 'Stop Calculation', shortcut: 'Esc', disabled: !solving, action: handleStopSolve },
+        {
+          label: 'Stop Calculation',
+          shortcut: 'Esc',
+          disabled: !solving && !parametricRunning,
+          action: () => {
+            if (parametricRunning) void useParametricStore.getState().stopStudy();
+            else void handleStopSolve();
+          },
+        },
         { divider: true },
         { label: 'Update Guesses from Solution', shortcut: 'Ctrl+G', disabled: !lastResult?.success || !resultIsLive, action: handleUpdateGuesses },
         { label: 'Reset Guesses to Default', disabled: !initials.trim(), action: handleResetGuesses },
@@ -664,6 +703,51 @@ export default function Toolbar() {
             setConfirmCloseTab(null);
           }}
           onCancel={() => setConfirmCloseTab(null)}
+        />
+      )}
+      {confirmOpen && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message="Opening a file replaces the current session. Unsaved editor text or table edits will be lost."
+          confirmLabel="Discard & Open"
+          onConfirm={async () => {
+            const f = pendingOpenFile;
+            setConfirmOpen(false);
+            setPendingOpenFile(null);
+            if (f) {
+              useModelStore.getState().setLookupTableDirty(false);
+              await doOpenFile(f);
+            }
+          }}
+          onCancel={() => {
+            setConfirmOpen(false);
+            setPendingOpenFile(null);
+          }}
+        />
+      )}
+      {confirmBack && (
+        <ConfirmModal
+          title="Discard Unsaved Work?"
+          message="Restoring the previous model replaces the current session. Unsaved edits will be lost."
+          confirmLabel="Discard & Restore"
+          onConfirm={async () => {
+            setConfirmBack(false);
+            useModelStore.getState().setLookupTableDirty(false);
+            await doBack();
+          }}
+          onCancel={() => setConfirmBack(false)}
+        />
+      )}
+      {confirmResetGuesses && (
+        <ConfirmModal
+          title="Reset All Guesses?"
+          message="This clears every initial guess. This cannot be undone."
+          confirmLabel="Reset Guesses"
+          onConfirm={async () => {
+            setConfirmResetGuesses(false);
+            await doResetGuesses();
+          }}
+          onCancel={() => setConfirmResetGuesses(false)}
         />
       )}
     </header>

@@ -59,19 +59,64 @@ function queued<T>(start: () => Promise<T>): Promise<T> {
   return done;
 }
 
+/**
+ * PUT a session file with a timeout. Without it one hung upload blocks the
+ * whole write queue (and every later save, switch and solve) with no error.
+ */
+async function putWithTimeout(path: string, content: string): Promise<{ success: boolean }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    return await request<{ success: boolean }>(path, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Upload timed out after 30 s');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function postWithTimeout<T>(path: string, body: unknown, timeoutMs = 30000): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await request<T>(path, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function requestOptional<T>(path: string): Promise<T | null> {
   const res = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json' },
   });
   if (res.status === 204 || res.status === 404) return null;
-  if (!res.ok) return null;
+  if (!res.ok) await apiError(res);
   return res.json();
 }
 
-export const api = {
-  /** URL of the model bundle (ZIP) download: a plain navigation, so the session goes in the URL. */
-  bundleUrl: () => withSession(`${API_BASE}/files/bundle`),
+/** Table names become a URL path + server file: allow only safe chars. */
+export function assertValidTableName(name: string): void {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+    throw new Error('Table name must be 1-64 chars: letters, numbers, - or _');
+  }
+}
 
+export const api = {
   // Health
   /** Marks this tab's session as in use: the server drops sessions idle for 24 h. */
   keepAlive: async (): Promise<void> => {
@@ -88,54 +133,38 @@ export const api = {
   getEescode: () =>
     request<{ content: string; filePath: string; modelName: string; libraryId: string }>('/files/eescode'),
   putEescode: (content: string) =>
-    queued(() =>
-      request<{ success: boolean }>('/files/eescode', {
-        method: 'PUT',
-        body: JSON.stringify({ content }),
-      })
-    ),
+    queued(() => putWithTimeout('/files/eescode', content)),
 
   getInitials: () => request<{ content: string }>('/files/initials'),
   putInitials: (content: string) =>
-    queued(() =>
-      request<{ success: boolean }>('/files/initials', {
-        method: 'PUT',
-        body: JSON.stringify({ content }),
-      })
-    ),
+    queued(() => putWithTimeout('/files/initials', content)),
 
   getSol: () => request<{ content: string }>('/files/sol'),
   getConf: () => request<{ content: string }>('/files/conf'),
   putConf: (content: string) =>
-    queued(() =>
-      request<{ success: boolean }>('/files/conf', {
-        method: 'PUT',
-        body: JSON.stringify({ content }),
-      })
-    ),
+    queued(() => putWithTimeout('/files/conf', content)),
 
   openFile: (path: string) =>
-    request<FileOpenResponse>('/files/open', {
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    }),
+    queued(() => postWithTimeout<FileOpenResponse>('/files/open', { path })),
 
   // New model (clear session)
   newModel: () =>
-    request<{ success: boolean; hadContent: boolean }>('/new', { method: 'POST' }),
+    queued(() => postWithTimeout<{ success: boolean; hadContent: boolean }>('/new', {})),
 
   // Back (restore previous model)
   goBack: () =>
-    request<{ success: boolean; modelName: string }>('/back', { method: 'POST' }),
+    queued(() => postWithTimeout<{ success: boolean; modelName: string }>('/back', {})),
 
   // Model name
   getModelName: () =>
     request<{ modelName: string }>('/model-name'),
   setModelName: (modelName: string) =>
-    request<{ success: boolean }>('/model-name', {
-      method: 'PUT',
-      body: JSON.stringify({ modelName }),
-    }),
+    queued(() =>
+      request<{ success: boolean }>('/model-name', {
+        method: 'PUT',
+        body: JSON.stringify({ modelName }),
+      })
+    ),
 
   // Parse
   parse: (source: string) =>
@@ -147,11 +176,9 @@ export const api = {
   // Solve (async — returns immediately, results come via SSE)
   // `deepSearch: true` triggers a "Try Harder" run: the deep-search pipeline
   // is used and tearing + symbolic reduction are forced on.
+  // Queued: a solve started right after edits must see the pushed files.
   solve: (options?: { eescode?: string; initials?: string; debug?: boolean; deepSearch?: boolean }) =>
-    request<{ status: string }>('/solve', {
-      method: 'POST',
-      body: JSON.stringify(options || {}),
-    }),
+    queued(() => postWithTimeout<{ status: string }>('/solve', options || {})),
 
   // Subscribe to solve progress via SSE. `onError` runs when the stream drops.
   subscribeSolveProgress: (onEvent: (event: SSEEvent) => void, onError?: () => void): EventSource => {
@@ -176,27 +203,53 @@ export const api = {
   cancelSolve: () =>
     request<{ success: boolean; message: string }>('/solve/cancel', { method: 'POST' }),
 
-  // Update guesses
+  // Update guesses: rewrites the session initials, so it joins the write
+  // queue like the other file writes.
   updateGuesses: () =>
-    request<{ success: boolean }>('/update-guesses', { method: 'POST' }),
+    queued(() => postWithTimeout<{ success: boolean }>('/update-guesses', {})),
 
   // Model library (the CoolSolve Library embedded in the server)
   getLibraryMenu: () => request<LibraryMenuResponse>('/library/menu'),
   openLibraryModel: (id: string, file?: string) =>
-    request<LibraryOpenResponse>('/library/open', {
-      method: 'POST',
-      body: JSON.stringify({ id, file: file ?? '' }),
-    }),
+    queued(() => postWithTimeout<LibraryOpenResponse>('/library/open', { id, file: file ?? '' })),
 
   // Debug output
   getDebugFiles: () => request<{ files: { name: string; size: number }[] }>('/debug/files'),
   getDebugFile: (name: string) => request<{ name: string; content: string }>(`/debug/file?name=${encodeURIComponent(name)}`),
 
-  // Upload ZIP file
-  uploadFiles: async (formData: FormData): Promise<UploadResponse> => {
-    const res = await apiFetch('/files/upload', { method: 'POST', body: formData });
+  // Upload ZIP file (10 MB cap + timeout: without them a huge or stuck
+  // upload hangs with no error. The server must enforce the cap too.)
+  // Queued: an upload replaces the session files, so it must not interleave
+  // with the file pushes of a tab switch or solve. cancelSolve stays outside
+  // the queue so a stop never waits behind a stuck upload.
+  uploadFiles: (formData: FormData): Promise<UploadResponse> =>
+    queued(async (): Promise<UploadResponse> => {
+    const f = formData.get('file');
+    if (f instanceof File && f.size > 10 * 1024 * 1024) {
+      throw new Error('File exceeds 10 MB limit');
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    try {
+      const res = await apiFetch('/files/upload', { method: 'POST', body: formData, signal: ctrl.signal });
+      if (!res.ok) await apiError(res);
+      return res.json();
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error('Upload timed out after 120 s');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    }),
+
+  // Model bundle (ZIP) download via an authenticated request, so the tab
+  // session id never lands in a URL (history, logs, pasted links).
+  downloadBundle: async (): Promise<Blob> => {
+    const res = await apiFetch('/files/bundle');
     if (!res.ok) await apiError(res);
-    return res.json();
+    return res.blob();
   },
 
   // Inferred variables (thermodynamic property inference)
@@ -215,18 +268,18 @@ export const api = {
     }),
 
   // Parametric study (async — returns immediately, results come via SSE)
+  // Queued for the same reason as solve: the sweep must see the pushed files.
   runParametricStudy: (
     sweepVariables: SweepVariable[],
     options?: { timeout?: number; updateGuesses?: boolean },
   ) =>
-    request<{ status: string; totalPoints: number }>('/parametric', {
-      method: 'POST',
-      body: JSON.stringify({
+    queued(() =>
+      postWithTimeout<{ status: string; totalPoints: number }>('/parametric', {
         sweepVariables,
         timeout: options?.timeout ?? 0,
         updateGuesses: options?.updateGuesses ?? false,
-      }),
-    }),
+      })
+    ),
 
   // Get last parametric study result
   getParametricResult: () =>
@@ -274,27 +327,56 @@ export const api = {
   getTables: () => request<LookupTablesResponse>('/tables'),
 
   getTableCSV: async (name: string): Promise<string> => {
+    assertValidTableName(name);
     const res = await apiFetch(`/tables/${encodeURIComponent(name)}`);
     if (!res.ok) await apiError(res);
     return res.text();
   },
 
-  putTable: async (name: string, csvContent: string): Promise<{ success: boolean; name: string; created: boolean }> => {
-    const res = await apiFetch(`/tables/${encodeURIComponent(name)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/csv' },
-      body: csvContent,
-    });
-    if (!res.ok) await apiError(res);
-    return res.json();
+  putTable: (name: string, csvContent: string): Promise<{ success: boolean; name: string; created: boolean }> =>
+    queued(async () => {
+      assertValidTableName(name);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      try {
+        const res = await apiFetch(`/tables/${encodeURIComponent(name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'text/csv' },
+          body: csvContent,
+          signal: ctrl.signal,
+        });
+        if (!res.ok) await apiError(res);
+        return res.json();
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw new Error('Table upload timed out after 30 s');
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+
+  deleteTable: (name: string) => {
+    assertValidTableName(name);
+    return queued(() =>
+      request<{ success: boolean; name: string }>(
+        `/tables/${encodeURIComponent(name)}`,
+        { method: 'DELETE' }
+      )
+    );
   },
 
-  deleteTable: (name: string) =>
-    request<{ success: boolean; name: string }>(
-      `/tables/${encodeURIComponent(name)}`,
-      { method: 'DELETE' }
-    ),
-
   // Usage log statistics (hidden dashboard at /stats)
-  getUsageStats: () => request<UsageStatsResponse>('/stats/log'),
+  getUsageStats: () => {
+    // The dashboard hides itself off-localhost, but a GUI check alone cannot
+    // protect this URL (anyone can fetch it directly): refuse remote calls
+    // here too. The server must gate /stats/log the same way.
+    // Browsers strip brackets: [::1] arrives as ::1.
+    const host = window.location.hostname;
+    if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(host)) {
+      return Promise.reject(new Error('Usage statistics are only available on a local install.'));
+    }
+    return request<UsageStatsResponse>('/stats/log');
+  },
 };

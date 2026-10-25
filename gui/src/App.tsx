@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { PanelRight, PanelBottom, ChevronDown, X } from 'lucide-react';
 import Toolbar from './components/Toolbar';
 import CodeEditor from './components/CodeEditor';
@@ -27,9 +27,11 @@ import { api } from './api/client';
 import { enableTabSession, getTabSessionId } from './api/session';
 import { openLibraryModel } from './utils/library';
 import { startResizeDrag } from './utils/drag';
-import { showSessionModel } from './utils/sessionModel';
+import { showSessionModel, openModelFile } from './utils/sessionModel';
 import { applyAppearance } from './utils/appearance';
+import { parseUnitSystemString } from './utils/unitSystem';
 import { toErrMsg } from './utils/errors';
+import { isRunBusy } from './utils/runBusy';
 import './App.css';
 
 // Hidden utility page (solve usage statistics) — reachable at /stats and the
@@ -54,6 +56,8 @@ function MainApp() {
   const activityMode = useUIStore((s) => s.activityMode);
   const leftPanelWidth = useUIStore((s) => s.leftPanelWidth);
   const setLeftPanelWidth = useUIStore((s) => s.setLeftPanelWidth);
+  const sidebarDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => { sidebarDrag.current?.(); }, []);
   const rightTab = useUIStore((s) => s.rightTab);
   const setRightTab = useUIStore((s) => s.setRightTab);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
@@ -79,16 +83,15 @@ function MainApp() {
   const [ready, setReady] = useState(false);
 
   // Extract active $UnitSystem string for the status bar
-  const unitSystemBadge = useMemo(() => {
-    const m = eescode.match(/^\s*\$UnitSystem\s+([^\r\n{"]+)/im);
-    return m ? m[1].trim() : 'SI C Pa J mass deg';
-  }, [eescode]);
+  const unitSystemBadge = useMemo(() => parseUnitSystemString(eescode), [eescode]);
 
   // Initialize: warmup CoolProp, then open what was asked for
   useEffect(() => {
+    // Every browser tab gets its own server session: two tabs must never
+    // solve each other's model (the write queue is per tab, not per server).
+    enableTabSession();
     const params = new URLSearchParams(window.location.search);
     const libraryParam = params.get('library');
-    if (libraryParam) enableTabSession();
     api.warmup()
       .catch(() => {})
       .finally(async () => {
@@ -117,6 +120,19 @@ function MainApp() {
     return () => window.clearInterval(timer);
   }, []);
 
+  // Unsaved text lives only in memory until it is pushed (debounced eescode /
+  // conf, or an explicit solve/switch/bundle). Warn on reload/close.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const s = useModelStore.getState();
+      if (s.dirty || s.lookupTableDirty) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   // Apply theme & modern palette
   useEffect(() => {
     applyAppearance(palette, accent, theme);
@@ -126,8 +142,14 @@ function MainApp() {
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      // Allow Monaco editor's in-app HTML context menu
-      if (target?.closest?.('.monaco-editor')) {
+      // Allow Monaco editor's in-app HTML context menu and the native menu
+      // in text fields (right-click paste must keep working there).
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest?.('.monaco-editor')
+      ) {
         return;
       }
       e.preventDefault();
@@ -167,6 +189,19 @@ function MainApp() {
       e.preventDefault();
       const files = e.dataTransfer.files;
       if (!files || files.length === 0) return;
+      // One session backs every tab: a drop mid-run would push new files
+      // under the running solve.
+      if (isRunBusy()) {
+        useModelStore.getState().addConsoleLine('>>> Cannot open a file while a run is in progress.');
+        return;
+      }
+      {
+        const s = useModelStore.getState();
+        if (s.dirty || s.lookupTableDirty) {
+          if (!window.confirm('You have unsaved edits. Drop the file anyway and lose them?')) return;
+          s.setLookupTableDirty(false);
+        }
+      }
 
       const file = files[0];
       if (file.size > 10 * 1024 * 1024) {
@@ -175,26 +210,10 @@ function MainApp() {
       }
 
       try {
-        if (file.name.toLowerCase().endsWith('.zip')) {
-          const formData = new FormData();
-          formData.append('file', file);
-          const res = await api.uploadFiles(formData);
-          if (res.success) {
-            await showSessionModel();
-            useModelStore.getState().setCanGoBack(true);
+        if (/\.(zip|eescode|ees|txt|cool)$/i.test(file.name)) {
+          if (await openModelFile(file)) {
             useUIStore.getState().setActivityMode('code');
-            useModelStore.getState().addConsoleLine(`>>> Opened bundle: ${res.files.join(', ')}`);
           }
-        } else if (/\.(eescode|ees|txt|cool)$/i.test(file.name)) {
-          const text = await file.text();
-          const stem = file.name.replace(/\.[^.]+$/, '') || 'model';
-          const res = await api.newModel();
-          await api.setModelName(stem);
-          await api.putEescode(text);
-          useModelStore.getState().loadFile(file.name, text, '', '', '', stem, '');
-          useModelStore.getState().setCanGoBack(res.hadContent);
-          useUIStore.getState().setActivityMode('code');
-          useModelStore.getState().addConsoleLine(`>>> Opened file: ${file.name}`);
         }
       } catch (err: unknown) {
         useModelStore.getState().addConsoleLine(`>>> ERROR loading dropped file: ${toErrMsg(err)}`);
@@ -409,7 +428,8 @@ function MainApp() {
     e.preventDefault();
     const startX = e.clientX;
     const startW = leftPanelWidth;
-    startResizeDrag('col-resize', (ev) => {
+    sidebarDrag.current?.();
+    sidebarDrag.current = startResizeDrag('col-resize', (ev) => {
       setLeftPanelWidth(Math.max(180, Math.min(420, startW + (ev.clientX - startX))));
     });
   };

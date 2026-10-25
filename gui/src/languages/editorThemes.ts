@@ -1,5 +1,5 @@
 import type * as Monaco from 'monaco-editor';
-import { APP_PALETTES } from '../utils/appearance';
+import { APP_PALETTES, normalizePaletteFamily } from '../utils/appearance.ts';
 
 export type Syntax = {
   comment: string;
@@ -155,11 +155,7 @@ export const THEME_CHOICES = [
 export const EDITOR_THEME_CHOICES = THEME_CHOICES;
 
 function normalizeFamily(choice: string): string {
-  let base = (choice || 'catppuccin').replace(/-(dark|light)$/, '');
-  if (base === 'atom' || base === 'atom-app' || base === 'default') base = 'onedark';
-  if (base === 'classic') base = 'onedark';
-  if (base === 'dracula') base = 'shades-of-purple';
-  if (base === 'nord') base = 'tokyo-night';
+  const base = normalizePaletteFamily(choice);
   return THEME_CHOICES.some((t) => t.id === base) ? base : 'catppuccin';
 }
 
@@ -207,64 +203,109 @@ export function getActiveEditorBg(
   return mode === 'dark' ? '#1e1e2e' : '#eff1f5';
 }
 
-export function defineEditorThemes(monaco: typeof Monaco) {
-  for (const p of EDITOR_THEMES) {
-    const register = (suffix: string, bg: string, line: string, gutter: string) => {
-      const rule = (token: string, foreground: string, fontStyle?: string) => [
-        { token, foreground: foreground.slice(1), ...(fontStyle ? { fontStyle } : {}) },
-        { token: `${token}.coolsolve`, foreground: foreground.slice(1), ...(fontStyle ? { fontStyle } : {}) },
-      ];
-      monaco.editor.defineTheme(`coolsolve-${p.id}${suffix}`, {
-        base: p.dark ? 'vs-dark' : 'vs',
-        inherit: false,
-        rules: [
-          { token: '', foreground: p.fg.slice(1), background: bg.slice(1) },
-          ...rule('comment', p.comment, 'italic'),
-          ...rule('string', p.string),
-          ...rule('string.escape', p.directive),
-          ...rule('number', p.number),
-          ...rule('keyword', p.keyword),
-          ...rule('keyword.directive', p.directive),
-          ...rule('type', p.type),
-          ...rule('type.identifier', p.type),
-          ...rule('predefined', p.predefined),
-          ...rule('identifier', p.identifier),
-          ...rule('operator', p.operator),
-          ...rule('delimiter', p.fg),
-          ...rule('delimiter.bracket', p.fg),
-        ],
-        colors: {
-          'editor.background': bg,
-          'editor.foreground': p.fg,
-          'editor.lineHighlightBackground': line,
-          'editor.lineHighlightBorder': '#00000000',
-          'editor.selectionBackground': p.sel,
-          'editor.inactiveSelectionBackground': p.sel + '99',
-          'editor.selectionHighlightBackground': p.sel + '66',
-          'editor.selectionHighlightBorder': '#00000000',
-          'editor.wordHighlightBackground': p.sel + '66',
-          'editor.wordHighlightStrongBackground': p.sel + '66',
-          'editorBracketMatch.background': '#00000000',
-          'editorBracketMatch.border': gutter,
-          'editorLineNumber.foreground': gutter,
-          'editorLineNumber.activeForeground': p.fg,
-          'editorCursor.foreground': p.cursor,
-          'editorGutter.background': bg,
-          'editorIndentGuide.background1': gutter + '55',
-          'editorIndentGuide.activeBackground1': gutter,
-          'editorWidget.background': line,
-          'editorWidget.border': gutter + '88',
-          'minimap.background': bg,
-          'scrollbarSlider.background': gutter + '44',
-          'scrollbarSlider.hoverBackground': gutter + '77',
-          'scrollbarSlider.activeBackground': gutter + 'aa',
-        },
-      });
-    };
-    register('', p.bg, p.line, p.gutter);
-    for (const appPal of APP_PALETTES) {
-      const appGutter = appPal.dark ? '#6c7086' : '#9ca0b0';
-      register(`-appbg-${appPal.id}`, appPal.bgPrimary, appPal.bgTertiary, appGutter);
-    }
+const definedByMonaco = new WeakMap<object, Set<string>>();
+
+function definedSet(monaco: object): Set<string> {
+  let s = definedByMonaco.get(monaco);
+  if (!s) {
+    s = new Set();
+    definedByMonaco.set(monaco, s);
   }
+  return s;
+}
+
+export function defineEditorThemes(monaco: typeof Monaco) {
+  // Lazy by default: define the 16 base themes now, app-bg variants on demand
+  // (16x16=256 full definitions at startup janked load). ensureEditorTheme
+  // below registers the exact variant when the user picks it.
+  for (const p of EDITOR_THEMES) {
+    defineOne(monaco, p, '', p.bg, p.line, p.gutter);
+  }
+}
+
+/** Define one theme id on demand (base or one app-bg variant). */
+export function ensureEditorTheme(monaco: typeof Monaco, themeId: string): void {
+  const seen = definedSet(monaco);
+  if (seen.has(themeId)) return;
+  const base = themeId.replace(/^coolsolve-/, '').replace(/-appbg-.*$/, '');
+  const appBg = themeId.includes('-appbg-') ? themeId.split('-appbg-')[1] : null;
+  const p = EDITOR_THEMES.find((t) => t.id === base)
+    ?? EDITOR_THEMES.find((t) => t.id === 'catppuccin-dark')!;
+  if (!appBg) {
+    defineOne(monaco, p, '', p.bg, p.line, p.gutter);
+    return;
+  }
+  const appPal = APP_PALETTES.find((a) => a.id === appBg);
+  if (!appPal) {
+    defineOne(monaco, p, '', p.bg, p.line, p.gutter);
+    return;
+  }
+  const appGutter = appPal.dark ? '#6c7086' : '#9ca0b0';
+  defineOne(monaco, p, `-appbg-${appPal.id}`, appPal.bgPrimary, appPal.bgTertiary, appGutter);
+}
+
+function defineOne(
+  monaco: typeof Monaco,
+  p: (typeof EDITOR_THEMES)[number],
+  suffix: string,
+  bg: string,
+  line: string,
+  gutter: string
+): void {
+  const id = `coolsolve-${p.id}${suffix}`;
+  const seen = definedSet(monaco);
+  if (seen.has(id)) return;
+  seen.add(id);
+  const rule = (token: string, foreground: string, fontStyle?: string) => [
+    { token, foreground: foreground.slice(1), ...(fontStyle ? { fontStyle } : {}) },
+    { token: `${token}.coolsolve`, foreground: foreground.slice(1), ...(fontStyle ? { fontStyle } : {}) },
+  ];
+  // Assume 6-digit hex (all bundled themes are); short alpha suffix keeps selection translucent.
+  const alpha = (hex: string, a: string) => (hex.length === 7 ? hex + a : hex);
+  monaco.editor.defineTheme(id, {
+    base: p.dark ? 'vs-dark' : 'vs',
+    inherit: false,
+    rules: [
+      { token: '', foreground: p.fg.slice(1), background: bg.slice(1) },
+      ...rule('comment', p.comment, 'italic'),
+      ...rule('string', p.string),
+      ...rule('string.escape', p.directive),
+      ...rule('number', p.number),
+      ...rule('keyword', p.keyword),
+      ...rule('keyword.directive', p.directive),
+      ...rule('type', p.type),
+      ...rule('type.identifier', p.type),
+      ...rule('predefined', p.predefined),
+      ...rule('identifier', p.identifier),
+      ...rule('operator', p.operator),
+      ...rule('delimiter', p.fg),
+      ...rule('delimiter.bracket', p.fg),
+    ],
+    colors: {
+      'editor.background': bg,
+      'editor.foreground': p.fg,
+      'editor.lineHighlightBackground': line,
+      'editor.lineHighlightBorder': '#00000000',
+      'editor.selectionBackground': p.sel,
+      'editor.inactiveSelectionBackground': alpha(p.sel, '99'),
+      'editor.selectionHighlightBackground': alpha(p.sel, '66'),
+      'editor.selectionHighlightBorder': '#00000000',
+      'editor.wordHighlightBackground': alpha(p.sel, '66'),
+      'editor.wordHighlightStrongBackground': alpha(p.sel, '66'),
+      'editorBracketMatch.background': '#00000000',
+      'editorBracketMatch.border': gutter,
+      'editorLineNumber.foreground': gutter,
+      'editorLineNumber.activeForeground': p.fg,
+      'editorCursor.foreground': p.cursor,
+      'editorGutter.background': bg,
+      'editorIndentGuide.background1': alpha(gutter, '55'),
+      'editorIndentGuide.activeBackground1': gutter,
+      'editorWidget.background': line,
+      'editorWidget.border': alpha(gutter, '88'),
+      'minimap.background': bg,
+      'scrollbarSlider.background': alpha(gutter, '44'),
+      'scrollbarSlider.hoverBackground': alpha(gutter, '77'),
+      'scrollbarSlider.activeBackground': alpha(gutter, 'aa'),
+    },
+  });
 }

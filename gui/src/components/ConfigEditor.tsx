@@ -1,9 +1,9 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useModelStore } from '../stores/modelStore';
 import { RotateCcw, Info } from 'lucide-react';
-import Tooltip from './Tooltip';
 import Select from './Select';
 import { parseKeyValueText, updateKeyValueLines } from '../utils/conf';
+import { PIPELINE_PRESETS, detectPipelinePreset } from '../utils/pipelinePreset.ts';
 
 interface ConfigField {
   key: string;
@@ -24,156 +24,6 @@ interface ConfigGroup {
   custom?: 'pipeline' | 'deepPipeline';
 }
 
-// ---------------------------------------------------------------------------
-// Pipeline presets — each preset sets both solverPipeline and pipelineMode.
-// ---------------------------------------------------------------------------
-const ALL_SOLVERS = 'Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned, Kinsol';
-
-const PIPELINE_PRESETS: Array<{
-  id: string;
-  label: string;
-  pipeline: string;
-  mode: string;
-  description: string;
-}> = [
-  {
-    id: 'sequential',
-    label: 'All Solvers (Sequential)',
-    pipeline: ALL_SOLVERS,
-    mode: 'sequential',
-    description:
-      'Tries all solvers in order: Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned → Kinsol. '
-      + 'Each solver warm-starts from the best result found so far. '
-      + 'BisectionND is automatically skipped for blocks larger than bisectionNDMaxBlockSize. '
-      + 'Robust and covers the widest range of problem types.',
-  },
-  {
-    id: 'parallel',
-    label: 'All Solvers (Parallel)',
-    pipeline: ALL_SOLVERS,
-    mode: 'parallel',
-    description:
-      'Launches all solvers concurrently in separate threads; the first solver to converge wins. '
-      + 'Useful when the best solver is unknown and you have spare CPU cores. '
-      + 'Uses more memory than sequential mode.',
-  },
-  {
-    id: 'newton-only',
-    label: 'Newton (Default)',
-    pipeline: 'Newton',
-    mode: 'sequential',
-    description:
-      'Newton solver with backtracking line search. '
-      + 'Fastest per block — ideal when the Jacobian is well-conditioned and '
-      + 'initial guesses are reasonably close to the solution. No fallback.',
-  },
-  {
-    id: 'trustregion-only',
-    label: 'TrustRegion',
-    pipeline: 'TrustRegion',
-    mode: 'sequential',
-    description:
-      'Trust-Region Dogleg solver. Blends steepest-descent and Newton steps, '
-      + 'keeping updates inside a safe radius. Helps when trial points would drive '
-      + 'thermodynamic calls into physically invalid regions. No fallback.',
-  },
-  {
-    id: 'lm-only',
-    label: 'LevenbergMarquardt',
-    pipeline: 'LevenbergMarquardt',
-    mode: 'sequential',
-    description:
-      'Levenberg-Marquardt solver. Uses adaptive damping: large λ → gradient descent '
-      + '(safe, slow); small λ → Gauss-Newton (fast, quadratic near solution). '
-      + 'Effective when the initial guess is far from the solution or the Jacobian is near-singular. No fallback.',
-  },
-  {
-    id: 'bisectionnd-only',
-    label: 'BisectionND',
-    pipeline: 'BisectionND',
-    mode: 'sequential',
-    description:
-      'Multi-dimensional Bisection (derivative-free). Converges even when J(x₀)=0. '
-      + 'Automatically skipped for blocks larger than bisectionNDMaxBlockSize (default: 8). '
-      + 'Cost is O(2ⁿ) function evaluations per iteration — use only for small blocks. No fallback.',
-  },
-  {
-    id: 'homotopy-only',
-    label: 'Homotopy',
-    pipeline: 'Homotopy',
-    mode: 'sequential',
-    description:
-      'Homotopy continuation. Deforms the problem from an easy auxiliary system to the real '
-      + 'system via a parameter t ∈ [0,1]. Can reach solutions from starting points that are '
-      + 'too far away for Newton-based methods. No fallback.',
-  },
-  {
-    id: 'partitioned-only',
-    label: 'Partitioned',
-    pipeline: 'Partitioned',
-    mode: 'sequential',
-    description:
-      'Partitioned Block Updates. Updates each variable using its matched equation diagonal: '
-      + 'xᵢ ← xᵢ − w·Fᵢ/(∂Fᵢ/∂xᵢ). Acts like a DAE-style tear without restructuring the block. '
-      + 'Last-resort stabilizer for stiff or highly nonlinear loops. No fallback.',
-  },
-  {
-    id: 'kinsol-only',
-    label: 'KINSOL',
-    pipeline: 'Kinsol',
-    mode: 'sequential',
-    description:
-      'SUNDIALS-KINSOL-style solver. Three globalisation modes (set via kinsolGlobalStrategy): '
-      + 'inexact Newton + Dennis-Schnabel line search (default), Picard/Richardson fixed-point, '
-      + 'or Anderson-accelerated fixed point. The derivative-free modes can solve blocks where '
-      + 'the Jacobian is zero or singular. No fallback.',
-  },
-  // Sentinel: shown only when the conf contains values that match no preset above.
-  {
-    id: 'custom',
-    label: 'Custom…',
-    pipeline: '',
-    mode: 'sequential',
-    description:
-      'The current coolsolve.conf contains a custom pipeline or mode that does not match '
-      + 'any preset. Edit the values below, or select a preset to replace them.',
-  },
-];
-
-/**
- * Infer which preset matches the current conf entries, or "custom" if none match.
- *
- * For the main pipeline (`pipelineKey='solverPipeline'`), the default — when
- * nothing is set — is `newton-only`.  For the Deep Search pipeline
- * (`deep=true`), the default is `sequential` (all solvers, sequential).
- */
-function detectPipelinePreset(
-  confMap: Map<string, string>,
-  pipelineKey = 'solverPipeline',
-  modeKey = 'pipelineMode',
-  deep = false,
-): string {
-  // Nothing set → default preset
-  if (!confMap.has(pipelineKey) && !confMap.has(modeKey)) {
-    return deep ? 'sequential' : 'newton-only';
-  }
-  const pipeline = (confMap.get(pipelineKey) ?? '').trim().toLowerCase();
-  const mode = (confMap.get(modeKey) ?? 'sequential').trim().toLowerCase();
-
-  // 1) Check single-solver presets (exact pipeline match + mode)
-  for (const p of PIPELINE_PRESETS) {
-    if (p.id === 'custom' || p.id === 'sequential' || p.id === 'parallel') continue;
-    if (p.pipeline.toLowerCase() === pipeline && p.mode.toLowerCase() === mode) return p.id;
-  }
-  // 2) Sequential / parallel: match on mode only (solver list is user-editable)
-  if (mode === 'parallel') return 'parallel';
-  // If mode is sequential and pipeline has more than one solver, keep "sequential"
-  if (mode === 'sequential') {
-    const solverCount = pipeline.split(',').filter((s) => s.trim()).length;
-    if (solverCount !== 1) return 'sequential';
-  }
-  return 'custom';
-}
 
 // ---------------------------------------------------------------------------
 // Config schema — all groups except pipeline use the standard field renderer.
@@ -527,6 +377,24 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
   },
 ];
 
+// Every key the GUI knows: Reset deletes these (back to backend defaults)
+// but keeps unknown keys (hand-added or future backend options).
+const SCHEMA_KEYS = new Set<string>([
+  ...CONFIG_SCHEMA.flatMap((g) => g.fields.map((f) => f.key)),
+  'solverPipeline',
+  'pipelineMode',
+  'deepSearchPipeline',
+  'deepSearchPipelineMode',
+]);
+
+const NUMERIC_KEYS = new Set<string>(
+  CONFIG_SCHEMA.flatMap((g) => g.fields.filter((f) => f.type === 'number').map((f) => f.key))
+);
+
+// A number being typed, not just a finished number: "1e-", "-", ".5" pass,
+// "abc" does not. The backend still validates the final text.
+const PARTIAL_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)?([eE][+-]?\d*)?$/;
+
 // ---------------------------------------------------------------------------
 // Pipeline group — custom dropdown component.
 // Reused for both the main solver pipeline and the Deep Search pipeline:
@@ -638,7 +506,11 @@ export default function ConfigEditor() {
 
   const handleChange = useCallback(
     (key: string, value: string) => {
-      setConf(updateKeyValueLines(conf, { [key]: value }));
+      // Empty means default: delete the key so the backend never sees `key=`.
+      // Numeric keys reject garbage keystrokes ("abc") but allow typing ("1e-").
+      const trimmed = value.trim();
+      if (trimmed !== '' && NUMERIC_KEYS.has(key) && !PARTIAL_NUMBER.test(trimmed)) return;
+      setConf(updateKeyValueLines(conf, { [key]: trimmed === '' ? undefined : value }));
       scheduleConfPut();
     },
     [conf, setConf, scheduleConfPut]
@@ -653,9 +525,18 @@ export default function ConfigEditor() {
   );
 
   const handleReset = useCallback(() => {
-    setConf('');
+    if (!window.confirm('Reset all coolsolve.conf settings to defaults?')) return;
+    // Delete only known keys: unknown lines (hand-added or future backend
+    // options) survive the reset.
+    const keep = conf.split(/\r?\n/).filter((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#') || !t.includes('=')) return true;
+      return !SCHEMA_KEYS.has(t.split('=')[0].trim());
+    });
+    const next = keep.join('\n').trim();
+    setConf(next ? `${next}\n` : '');
     scheduleConfPut();
-  }, [setConf, scheduleConfPut]);
+  }, [conf, setConf, scheduleConfPut]);
 
   return (
     <div className="config-editor">
@@ -693,9 +574,9 @@ export default function ConfigEditor() {
                         <span className="config-field-label">
                           {field.label}
                           {field.description && (
-                            <Tooltip content={field.description}>
+                            <span title={field.description} style={{ display: 'inline-flex' }}>
                               <Info size={12} className="config-info-icon" />
-                            </Tooltip>
+                            </span>
                           )}
                         </span>
                         <span className="config-field-default">default: {field.defaultVal}</span>

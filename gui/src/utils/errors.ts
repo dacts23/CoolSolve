@@ -11,7 +11,8 @@
 export function toErrMsg(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
-  if (err && typeof err === 'object' && 'message' in err) {
+  if (err === null || err === undefined) return 'Unknown error';
+  if (typeof err === 'object' && 'message' in err) {
     const m = (err as { message: unknown }).message;
     if (typeof m === 'string') return m;
   }

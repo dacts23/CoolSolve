@@ -1,7 +1,7 @@
 {
   "name": "gui",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/cascadia-code": "^5.3.0",
+    "@fontsource/fira-code": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@monaco-editor/react": "^4.7.0",
     "lucide-react": "^0.564.0",
     "plotly.js-cartesian-dist-min": "^3.4.0",

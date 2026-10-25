@@ -8,7 +8,7 @@
  */
 
 import type * as Monaco from 'monaco-editor';
-import { useUIStore } from '../stores/uiStore';
+import { useUIStore } from '../stores/uiStore.ts';
 
 /**
  * `@monaco-editor/react`'s loader exposes the Monaco namespace on
@@ -29,16 +29,30 @@ export function setEditorInstance(editor: Monaco.editor.IStandaloneCodeEditor | 
 }
 
 /**
- * Toggle invisible comment: wraps/unwraps selected lines in { ... }
+ * Shared guard for editor commands that need a model and a selection.
+ * Switches back to the code view first; returns null when there is nothing to act on.
  */
-export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
+function withSelection(editor: Monaco.editor.IStandaloneCodeEditor | null): {
+  model: Monaco.editor.ITextModel;
+  selection: Monaco.Selection;
+} | null {
   if (useUIStore.getState().activityMode !== 'code') {
     useUIStore.getState().setActivityMode('code');
   }
-  if (!editor) return;
+  if (!editor) return null;
   const model = editor.getModel();
   const selection = editor.getSelection();
-  if (!model || !selection) return;
+  if (!model || !selection) return null;
+  return { model, selection };
+}
+
+/**
+ * Toggle invisible comment: wraps/unwraps selected lines in { ... }
+ */
+export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
+  const ctx = withSelection(editor);
+  if (!ctx || !editor) return;
+  const { model, selection } = ctx;
 
   const startLine = selection.startLineNumber;
   const endLine = selection.endLineNumber;
@@ -91,13 +105,9 @@ export function toggleBraceComment(editor: Monaco.editor.IStandaloneCodeEditor |
  * Toggle visible comment: wraps/unwraps selected text in "..."
  */
 export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor | null): void {
-  if (useUIStore.getState().activityMode !== 'code') {
-    useUIStore.getState().setActivityMode('code');
-  }
-  if (!editor) return;
-  const model = editor.getModel();
-  const selection = editor.getSelection();
-  if (!model || !selection) return;
+  const ctx = withSelection(editor);
+  if (!ctx || !editor) return;
+  const { model, selection } = ctx;
 
   const selectedText = model.getValueInRange(selection);
   if (!selectedText) {
@@ -141,17 +151,18 @@ export function toggleQuoteComment(editor: Monaco.editor.IStandaloneCodeEditor |
   editor.focus();
 }
 
-/** Insert a snippet or statement at the current cursor position in Monaco. */
-export function insertAtCursor(text: string): void {
-  if (!editorInstance) return;
+/** Insert a snippet or statement at the current cursor position in Monaco. Returns true if inserted. */
+export function insertAtCursor(text: string): boolean {
+  if (!editorInstance) return false;
   const selection = editorInstance.getSelection();
-  if (!selection) return;
+  if (!selection) return false;
   editorInstance.executeEdits('code-insert', [{
     range: selection,
     text,
     forceMoveMarkers: true,
   }]);
   editorInstance.focus();
+  return true;
 }
 
 /** Trigger a built-in Monaco editor action by id (e.g. 'undo', 'redo', 'actions.find'). */
